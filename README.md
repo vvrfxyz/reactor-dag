@@ -48,11 +48,6 @@ public class ProcessingContext {
 public class ValidationNode implements DagNode<ProcessingContext, Boolean> {
     
     @Override
-    public String getName() {
-        return "validation";
-    }
-    
-    @Override
     public List<DependencyDescriptor> getDependencies() {
         return Collections.emptyList(); // 无依赖
     }
@@ -85,14 +80,9 @@ public class ValidationNode implements DagNode<ProcessingContext, Boolean> {
 public class ProcessingNode implements DagNode<ProcessingContext, String> {
     
     @Override
-    public String getName() {
-        return "processing";
-    }
-    
-    @Override
     public List<DependencyDescriptor> getDependencies() {
         return Collections.singletonList(
-            new DependencyDescriptor("validation", Boolean.class)
+            new DependencyDescriptor(ValidationNode.class.getSimpleName(), Boolean.class)
         );
     }
     
@@ -108,7 +98,7 @@ public class ProcessingNode implements DagNode<ProcessingContext, String> {
         
         // 检查依赖节点的结果
         NodeResult<ProcessingContext, Boolean> validationResult = 
-            (NodeResult<ProcessingContext, Boolean>) dependencyResults.get("validation");
+            (NodeResult<ProcessingContext, Boolean>) dependencyResults.get(ValidationNode.class.getSimpleName());
             
         if (!validationResult.getError().isPresent() && validationResult.getData()) {
             // 处理输入
