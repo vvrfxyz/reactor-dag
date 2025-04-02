@@ -1,0 +1,2 @@
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+xyz.vvrf.reactor.dag.spring.boot.DagFrameworkAutoConfiguration
