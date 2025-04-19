@@ -1,4 +1,4 @@
-package xyz.vvrf.reactor.dag.example;
+package xyz.vvrf.reactor.dag.example.dataProcessingDag;
 
 /**
  * reactor-dag-example
@@ -13,7 +13,7 @@ import lombok.Data;
  * 处理结果
  */
 @Data
-class ProcessingResult {
+public class ProcessingResult {
     private int totalItems;
     private int validItems;
     private int transformedItems;

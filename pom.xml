@@ -212,16 +212,16 @@
     </profile>
   </profiles>
 
-  <distributionManagement>
-    <repository>
-      <!-- RELEASE -->
-      <id>cashimRepo</id>
-      <url>http://10.0.249.1:8081/repository/maven-releases/</url>
-    </repository>
-    <snapshotRepository>
-      <!-- SNAPSHOT版本 -->
-      <id>cashimRepo</id>
-      <url>http://10.0.249.1:8081/repository/maven-snapshots/</url>
-    </snapshotRepository>
-  </distributionManagement>
+<!--  <distributionManagement>-->
+<!--    <repository>-->
+<!--      &lt;!&ndash; RELEASE &ndash;&gt;-->
+<!--      <id>cashimRepo</id>-->
+<!--      <url>http://10.0.249.1:8081/repository/maven-releases/</url>-->
+<!--    </repository>-->
+<!--    <snapshotRepository>-->
+<!--      &lt;!&ndash; SNAPSHOT版本 &ndash;&gt;-->
+<!--      <id>cashimRepo</id>-->
+<!--      <url>http://10.0.249.1:8081/repository/maven-snapshots/</url>-->
+<!--    </snapshotRepository>-->
+<!--  </distributionManagement>-->
 </project>

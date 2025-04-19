@@ -63,10 +63,6 @@ public class StandardDagEngine {
 
         // 获取执行顺序
         List<String> nodeNames = dagDefinition.getExecutionOrder();
-        if (nodeNames.isEmpty()) {
-            log.warn("[RequestId: {}] DAG '{}' 执行顺序为空，将只发送 DONE 事件", actualRequestId, dagName);
-            return createDoneEventMono(actualRequestId).flux();
-        }
 
         // 创建所有节点的事件流
         Flux<Event<?>> nodesFlux = createNodesFlux(
@@ -212,18 +208,4 @@ public class StandardDagEngine {
         requestCache.cleanUp();
     }
 
-    /**
-     * 创建 DONE 事件 Mono
-     */
-    private Mono<Event<?>> createDoneEventMono(String requestId) {
-        return Mono.defer(() -> {
-            try {
-                Event<String> doneEvent = Event.of("DONE", "DONE");
-                return Mono.just((Event<?>) doneEvent);
-            } catch (Exception e) {
-                log.error("[RequestId: {}] 创建DONE事件失败: {}", requestId, e.getMessage());
-                return Mono.error(e);
-            }
-        });
-    }
 }

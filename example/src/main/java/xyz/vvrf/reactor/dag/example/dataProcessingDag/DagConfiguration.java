@@ -1,8 +1,9 @@
-package xyz.vvrf.reactor.dag.example;
+package xyz.vvrf.reactor.dag.example.dataProcessingDag;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import xyz.vvrf.reactor.dag.core.DagNode;
+import xyz.vvrf.reactor.dag.example.dataProcessingDag.node.*;
 
 import java.util.List;
 

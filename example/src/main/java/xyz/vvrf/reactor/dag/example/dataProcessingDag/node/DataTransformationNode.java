@@ -1,4 +1,4 @@
-package xyz.vvrf.reactor.dag.example;
+package xyz.vvrf.reactor.dag.example.dataProcessingDag.node;
 
 /**
  * reactor-dag-example
@@ -14,6 +14,8 @@ import xyz.vvrf.reactor.dag.core.DagNode;
 import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
 import xyz.vvrf.reactor.dag.core.Event;
 import xyz.vvrf.reactor.dag.core.NodeResult;
+import xyz.vvrf.reactor.dag.example.dataProcessingDag.DataItem;
+import xyz.vvrf.reactor.dag.example.dataProcessingDag.ProcessingContext;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -24,7 +26,7 @@ import java.util.Map;
  * 数据转换节点 - 对数据进行转换处理
  */
 @Slf4j
-class DataTransformationNode implements DagNode<ProcessingContext, List<DataItem>> {
+public class DataTransformationNode implements DagNode<ProcessingContext, List<DataItem>> {
 
     @Override
     public String getName() {

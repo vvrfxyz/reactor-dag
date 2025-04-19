@@ -1,4 +1,4 @@
-package xyz.vvrf.reactor.dag.example;
+package xyz.vvrf.reactor.dag.example.dataProcessingDag.node;
 
 /**
  * reactor-dag-example
@@ -14,6 +14,8 @@ import xyz.vvrf.reactor.dag.core.DagNode;
 import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
 import xyz.vvrf.reactor.dag.core.Event;
 import xyz.vvrf.reactor.dag.core.NodeResult;
+import xyz.vvrf.reactor.dag.example.dataProcessingDag.DataItem;
+import xyz.vvrf.reactor.dag.example.dataProcessingDag.ProcessingContext;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -21,20 +23,20 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 数据富集节点 - 为数据添加额外信息
+ * 数据验证节点 - 验证数据的有效性
  */
 @Slf4j
-class DataEnrichmentNode implements DagNode<ProcessingContext, List<DataItem>> {
+public class DataValidationNode implements DagNode<ProcessingContext, List<DataItem>> {
 
     @Override
     public String getName() {
-        return "dataEnrichment";
+        return "dataValidation";
     }
 
     @Override
     public List<DependencyDescriptor> getDependencies() {
         List<DependencyDescriptor> deps = new ArrayList<>();
-        deps.add(new DependencyDescriptor("dataTransformation", List.class));
+        deps.add(new DependencyDescriptor("dataFetch", List.class));
         return deps;
     }
 
@@ -49,28 +51,24 @@ class DataEnrichmentNode implements DagNode<ProcessingContext, List<DataItem>> {
             ProcessingContext context, Map<String, NodeResult<ProcessingContext, ?>> dependencyResults) {
 
         return Mono.fromCallable(() -> {
-            if (!context.isIncludeEnrichment()) {
-                // 如果不需要富集，直接返回转换后的数据
-                context.setEnrichedData(context.getTransformedData());
-                return new NodeResult<>(context, Flux.empty(), getPayloadType());
+            List<DataItem> validatedItems = new ArrayList<>();
+            int validCount = 0;
+
+            for (DataItem item : context.getRawData()) {
+                if (item.isValid()) {
+                    validatedItems.add(item);
+                    validCount++;
+                }
             }
 
-            List<DataItem> enrichedItems = new ArrayList<>();
-
-            for (DataItem item : context.getTransformedData()) {
-                // 模拟数据富集
-                item.setEnrichedInfo("加强信息: " + item.getId());
-                enrichedItems.add(item);
-            }
-
-            context.setEnrichedData(enrichedItems);
+            context.setValidatedData(validatedItems);
 
             // 使用一致的泛型类型修复事件创建
             Flux<Event<List<DataItem>>> events = Flux.concat(
-                    Mono.just(Event.of("enrich.start", enrichedItems)),
-                    Mono.just(Event.of("enrich.progress", enrichedItems)),
-                    Mono.just(Event.of("enrich.complete", enrichedItems))
-            ).delayElements(Duration.ofMillis(300)); // 模拟延迟
+                    Mono.just(Event.of("validation.start", validatedItems)),
+                    Mono.just(Event.of("validation.stats", validatedItems)),
+                    Mono.just(Event.of("validation.complete", validatedItems))
+            ).delayElements(Duration.ofMillis(200)); // 模拟延迟
 
             return new NodeResult<>(context, events, getPayloadType());
         });

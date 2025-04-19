@@ -1,4 +1,4 @@
-package xyz.vvrf.reactor.dag.example;
+package xyz.vvrf.reactor.dag.example.dataProcessingDag;
 
 /**
  * reactor-dag-example
@@ -15,7 +15,7 @@ import java.util.List;
 /**
  * 数据处理DAG定义
  */
-class DataProcessingDag extends AbstractDagDefinition<ProcessingContext> {
+public class DataProcessingDag extends AbstractDagDefinition<ProcessingContext> {
     public DataProcessingDag(List<DagNode<ProcessingContext, ?>> nodes) {
         super(ProcessingContext.class, nodes);
         initializeIfNeeded();

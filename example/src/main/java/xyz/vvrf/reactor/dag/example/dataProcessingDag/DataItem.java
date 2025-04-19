@@ -1,4 +1,4 @@
-package xyz.vvrf.reactor.dag.example;
+package xyz.vvrf.reactor.dag.example.dataProcessingDag;
 
 /**
  * reactor-dag-example
@@ -13,7 +13,7 @@ import lombok.Data;
  * 数据项
  */
 @Data
-class DataItem {
+public class DataItem {
     private String id;
     private String value;
     private boolean valid;

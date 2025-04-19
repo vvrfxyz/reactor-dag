@@ -1,4 +1,4 @@
-package xyz.vvrf.reactor.dag.example;
+package xyz.vvrf.reactor.dag.example.dataProcessingDag.node;
 
 /**
  * reactor-dag-example
@@ -14,6 +14,8 @@ import xyz.vvrf.reactor.dag.core.DagNode;
 import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
 import xyz.vvrf.reactor.dag.core.Event;
 import xyz.vvrf.reactor.dag.core.NodeResult;
+import xyz.vvrf.reactor.dag.example.dataProcessingDag.ProcessingContext;
+import xyz.vvrf.reactor.dag.example.dataProcessingDag.ProcessingResult;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -24,7 +26,7 @@ import java.util.Map;
  * 结果组装节点 - 组装最终处理结果
  */
 @Slf4j
-class ResultAssemblyNode implements DagNode<ProcessingContext, ProcessingResult> {
+public class ResultAssemblyNode implements DagNode<ProcessingContext, ProcessingResult> {
 
     @Override
     public String getName() {

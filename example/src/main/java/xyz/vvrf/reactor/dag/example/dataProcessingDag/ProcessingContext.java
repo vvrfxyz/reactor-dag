@@ -1,4 +1,4 @@
-package xyz.vvrf.reactor.dag.example;
+package xyz.vvrf.reactor.dag.example.dataProcessingDag;
 
 /**
  * reactor-dag-example
@@ -15,7 +15,7 @@ import java.util.List;
  * 处理上下文类，存储处理过程中的数据
  */
 @Data
-class ProcessingContext {
+public class ProcessingContext {
     private int dataSize;
     private boolean includeEnrichment;
     private List<DataItem> rawData;

@@ -58,9 +58,7 @@ public class SpringDagEngine {
         Flux<ServerSentEvent<?>> mainFlux = dagEngine.execute(initialContext, requestId, dagDefinition)
                 .map(this::convertToServerSentEvent);
 
-        Mono<ServerSentEvent<?>> doneEvent = createDoneEventMono(requestId);
-
-        return Flux.concat(mainFlux, doneEvent);
+        return mainFlux;
     }
 
     /**
@@ -76,21 +74,4 @@ public class SpringDagEngine {
                 .build();
     }
 
-    /**
-     * 创建 DONE 事件 Mono
-     */
-    private Mono<ServerSentEvent<?>> createDoneEventMono(String requestId) {
-        return Mono.defer(() -> {
-            try {
-                ServerSentEvent<String> doneEvent = ServerSentEvent.<String>builder()
-                        .event("DONE")
-                        .data("DONE")
-                        .build();
-                return Mono.just((ServerSentEvent<?>) doneEvent);
-            } catch (Exception e) {
-                log.error("[RequestId: {}] 创建DONE事件失败: {}", requestId, e.getMessage());
-                return Mono.error(e);
-            }
-        });
-    }
 }

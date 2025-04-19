@@ -1,4 +1,4 @@
-package xyz.vvrf.reactor.dag.example;
+package xyz.vvrf.reactor.dag.example.dataProcessingDag.node;
 
 /**
  * reactor-dag-example
@@ -14,6 +14,8 @@ import xyz.vvrf.reactor.dag.core.DagNode;
 import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
 import xyz.vvrf.reactor.dag.core.Event;
 import xyz.vvrf.reactor.dag.core.NodeResult;
+import xyz.vvrf.reactor.dag.example.dataProcessingDag.DataItem;
+import xyz.vvrf.reactor.dag.example.dataProcessingDag.ProcessingContext;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -25,7 +27,7 @@ import java.util.UUID;
  * 数据获取节点 - 负责从指定来源获取原始数据
  */
 @Slf4j
-class DataFetchNode implements DagNode<ProcessingContext, List<DataItem>> {
+public class DataFetchNode implements DagNode<ProcessingContext, List<DataItem>> {
 
     @Override
     public String getName() {
