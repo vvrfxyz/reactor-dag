@@ -70,6 +70,6 @@ public class ParallelNodeA implements DagNode<ParalleContext, String> {
             String resultPayload = getName() + " executed successfully on " + threadName;
             System.out.println(getName() + " finished.");
             return new NodeResult<>(context, Flux.empty(),String.class);
-        }).subscribeOn(Schedulers.boundedElastic());
+        });
     }
 }

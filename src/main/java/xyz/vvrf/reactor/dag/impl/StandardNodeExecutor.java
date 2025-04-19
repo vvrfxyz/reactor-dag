@@ -4,6 +4,8 @@ import com.github.benmanes.caffeine.cache.Cache;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 import xyz.vvrf.reactor.dag.core.*;
 
 import java.time.Duration;
@@ -21,6 +23,7 @@ public class StandardNodeExecutor {
 
     private final Duration defaultNodeTimeout;
     private final Duration dependencyStreamTimeout;
+    private final Scheduler nodeExecutionScheduler;
 
     /**
      * 创建标准节点执行器
@@ -31,6 +34,15 @@ public class StandardNodeExecutor {
     public StandardNodeExecutor(Duration defaultNodeTimeout, Duration dependencyStreamTimeout) {
         this.defaultNodeTimeout = defaultNodeTimeout;
         this.dependencyStreamTimeout = dependencyStreamTimeout;
+        this.nodeExecutionScheduler = Schedulers.boundedElastic();
+        log.info("StandardNodeExecutor 初始化完成，节点超时: {}, 依赖流超时: {}",
+                defaultNodeTimeout, dependencyStreamTimeout);
+    }
+
+    public StandardNodeExecutor(Duration defaultNodeTimeout, Duration dependencyStreamTimeout, Scheduler nodeExecutionScheduler) {
+        this.defaultNodeTimeout = defaultNodeTimeout;
+        this.dependencyStreamTimeout = dependencyStreamTimeout;
+        this.nodeExecutionScheduler = nodeExecutionScheduler;
         log.info("StandardNodeExecutor 初始化完成，节点超时: {}, 依赖流超时: {}",
                 defaultNodeTimeout, dependencyStreamTimeout);
     }
@@ -348,6 +360,7 @@ public class StandardNodeExecutor {
                     log.debug("[RequestId: {}] DAG '{}': 开始执行节点 '{}' 逻辑...", requestId, dagName, nodeName);
                     return node.execute(context, depResults);
                 })
+                .subscribeOn(Schedulers.boundedElastic())
                 .timeout(timeout)
                 .doOnSuccess(result -> validateAndLogResult(result, expectedPayloadType, nodeName, dagName, requestId))
                 .onErrorResume(error -> handleExecutionError(error, context, nodeName, dagName, timeout, expectedPayloadType, requestId));
