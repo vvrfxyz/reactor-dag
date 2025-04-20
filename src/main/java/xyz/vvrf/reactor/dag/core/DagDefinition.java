@@ -24,6 +24,16 @@ public interface DagDefinition<C> {
     }
 
     /**
+     * 获取节点的有效依赖关系。
+     * 实现应优先考虑外部（如 Builder）设置的显式依赖，
+     * 如果没有显式依赖，则回退到节点自身的 getDependencies() 定义。
+     *
+     * @param nodeName 节点名称
+     * @return 该节点的有效依赖描述符列表，如果节点不存在或无依赖则为空列表。
+     */
+    List<DependencyDescriptor> getEffectiveDependencies(String nodeName);
+
+    /**
      * 获取此 DAG 定义适用的上下文类型。
      * 主要用于类型安全和查找。
      *

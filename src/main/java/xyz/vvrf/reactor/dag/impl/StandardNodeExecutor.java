@@ -1,5 +1,7 @@
+// standardnodeexecutor.java
 package xyz.vvrf.reactor.dag.impl;
 
+// ... (imports)
 import com.github.benmanes.caffeine.cache.Cache;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
@@ -16,14 +18,15 @@ import java.util.stream.Collectors;
 /**
  * 标准节点执行器 - 负责执行单个节点并处理依赖关系和缓存。
  * 支持流式节点：不等待依赖节点的事件流完成，直接传递包含流引用的 NodeResult。
+ * 使用 DagDefinition.getEffectiveDependencies 获取依赖。
  *
- * @author ruifeng.wen (modified based on discussion)
+ * @author ruifeng.wen
  */
 @Slf4j
 public class StandardNodeExecutor {
 
-    private final Duration defaultNodeTimeout; // 节点执行的默认超时时间
-    private final Scheduler nodeExecutionScheduler; // 执行节点逻辑的调度器
+    private final Duration defaultNodeTimeout;
+    private final Scheduler nodeExecutionScheduler;
 
     /**
      * 创建标准节点执行器，使用默认的 Schedulers.boundedElastic()。
@@ -68,7 +71,7 @@ public class StandardNodeExecutor {
      */
     public <C, P> Mono<NodeResult<C, P, ?>> getNodeExecutionMono(
             final String nodeName,
-            final Class<P> payloadType, // 期望的 Payload 类型
+            final Class<P> payloadType,
             final C context,
             final Cache<String, Mono<? extends NodeResult<C, ?, ?>>> cache,
             final DagDefinition<C> dagDefinition,
@@ -79,16 +82,12 @@ public class StandardNodeExecutor {
 
         // 使用 computeIfAbsent 简化缓存逻辑，确保只创建一次 Mono
         // 注意：Caffeine 的 computeIfAbsent 不是原子的对于值的计算，但对于 Mono.cache() 来说通常没问题，
-        // 因为即使并发创建了多个 newMono，最终只有一个会被放入缓存并返回，其他的会被 GC。
-        // 或者保持原有的 getIfPresent + put 模式，它对于 Mono.cache() 也是线程安全的。
-        // 这里保持原有模式以减少改动。
         return Mono.defer(() -> {
             Mono<? extends NodeResult<C, ?, ?>> cachedMono = cache.getIfPresent(cacheKey);
 
             if (cachedMono != null) {
                 log.trace("[RequestId: {}] DAG '{}': 缓存命中节点 '{}' (Payload 类型 {})",
                         requestId, dagName, nodeName, payloadType.getSimpleName());
-                // 类型转换仍然需要，因为缓存存储的是通配符类型
                 return (Mono<NodeResult<C, P, ?>>) cachedMono;
             } else {
                 log.debug("[RequestId: {}] DAG '{}': 缓存未命中，创建节点 '{}' (Payload 类型 {}) 执行 Mono",
@@ -116,7 +115,7 @@ public class StandardNodeExecutor {
      */
     private <C, P> Mono<NodeResult<C, P, ?>> createNodeExecutionMono(
             final String nodeName,
-            final Class<P> payloadType, // 期望的 Payload 类型
+            final Class<P> payloadType,
             final C context,
             final Cache<String, Mono<? extends NodeResult<C, ?, ?>>> cache,
             final DagDefinition<C> dagDefinition,
@@ -142,7 +141,7 @@ public class StandardNodeExecutor {
                         // 我们需要返回 Mono<NodeResult<C, P, ?>>
                         Mono<? extends NodeResult<C, P, ?>> resultMono = executeNodeInternal(
                                 node, context, dependencyResults, timeout, requestId, dagName);
-                        return resultMono; // 返回带有通配符类型的 Mono
+                        return resultMono;
                     });
         });
     }
@@ -184,13 +183,11 @@ public class StandardNodeExecutor {
     }
 
     /**
-     * 解析节点的所有依赖。
+     * 解析节点的所有依赖 (使用 DagDefinition.getEffectiveDependencies)。
      * 返回一个 Mono，该 Mono 完成时会发出一个 Map，包含所有依赖节点的名称及其对应的 NodeResult。
-     * 这个 Mono 的完成仅表示所有依赖节点的 NodeResult 对象已准备好（可能包含活动的流），
-     * 而不是等待这些流完成。
      */
     private <C, P, T> Mono<Map<String, NodeResult<C, ?, ?>>> resolveDependencies(
-            final DagNode<C, P, T> node,
+            final DagNode<C, P, T> node, // 传入节点实例是为了获取名称，也可以只传名称
             final C context,
             final Cache<String, Mono<? extends NodeResult<C, ?, ?>>> cache,
             final DagDefinition<C> dagDefinition,
@@ -198,13 +195,15 @@ public class StandardNodeExecutor {
 
         final String nodeName = node.getName();
         final String dagName = dagDefinition.getDagName();
-        List<DependencyDescriptor> dependencies = node.getDependencies();
 
-        if (dependencies == null || dependencies.isEmpty()) {
+        // *** 使用 getEffectiveDependencies 获取依赖列表 ***
+        List<DependencyDescriptor> dependencies = dagDefinition.getEffectiveDependencies(nodeName);
+
+        if (dependencies.isEmpty()) {
             return Mono.just(Collections.emptyMap());
         }
 
-        log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 正在解析 {} 个依赖: {}",
+        log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 正在解析 {} 个有效依赖: {}",
                 requestId, dagName, nodeName, dependencies.size(),
                 dependencies.stream().map(DependencyDescriptor::toString).collect(Collectors.toList()));
 
@@ -213,16 +212,16 @@ public class StandardNodeExecutor {
                 .map(dep -> resolveSingleDependency(dep, context, cache, dagDefinition, nodeName, requestId))
                 .collect(Collectors.toList());
 
-        // 使用 Flux.flatMap 并发（或顺序，取决于调度器和 flatMap 行为）地执行所有依赖解析 Mono
+        // 使用 Flux.flatMap 并发执行所有依赖解析 Mono
         // collectMap 会等待所有内部 Mono<Map.Entry> 完成后，将结果收集到 Map 中
         return Flux.fromIterable(dependencyMonos)
                 .flatMap(mono -> mono) // 触发每个 Mono<Map.Entry> 的执行
                 .collectMap(Map.Entry::getKey, Map.Entry::getValue)
                 .doOnSuccess(results -> log.debug(
-                        "[RequestId: {}] DAG '{}': 节点 '{}' 的所有 {} 个依赖的 NodeResult 已就绪。", // 修改日志，不再说“解析完成”而是“NodeResult 已就绪”
+                        "[RequestId: {}] DAG '{}': 节点 '{}' 的所有 {} 个依赖的 NodeResult 已就绪。",
                         requestId, dagName, nodeName, results.size()))
                 .doOnError(e -> log.error(
-                        "[RequestId: {}] DAG '{}': 节点 '{}' 获取依赖 NodeResult 失败: {}", // 修改日志
+                        "[RequestId: {}] DAG '{}': 节点 '{}' 获取依赖 NodeResult 失败: {}",
                         requestId, dagName, nodeName, e.getMessage(), e));
     }
 
@@ -236,11 +235,11 @@ public class StandardNodeExecutor {
             C context,
             Cache<String, Mono<? extends NodeResult<C, ?, ?>>> cache,
             DagDefinition<C> dagDefinition,
-            String dependentNodeName, // 请求此依赖的节点名称
+            String dependentNodeName,
             String requestId) {
 
-        String depName = dep.getName(); // 依赖的节点名称
-        Class<R> requiredPayloadType = (Class<R>) dep.getRequiredType(); // 下游节点期望的 Payload 类型
+        String depName = dep.getName();
+        Class<R> requiredPayloadType = (Class<R>) dep.getRequiredType();
         String dagName = dagDefinition.getDagName();
 
         log.trace("[RequestId: {}] DAG '{}': 节点 '{}' 开始解析依赖 '{}' (期望 Payload: {})",
@@ -253,8 +252,7 @@ public class StandardNodeExecutor {
 
         // 当依赖节点的 Mono<NodeResult> 完成时，处理结果
         return dependencyResultMono
-                .map(result -> { // 使用 map 直接转换 NodeResult 为 Map.Entry
-                    // 检查依赖节点本身是否执行失败
+                .map(result -> {
                     if (result.isFailure()) {
                         log.warn("[RequestId: {}] DAG '{}': 节点 '{}' 的依赖 '{}' 执行失败，将使用此失败结果。错误: {}",
                                 requestId, dagName, dependentNodeName, depName,
@@ -271,18 +269,11 @@ public class StandardNodeExecutor {
                 .onErrorResume(e -> handleDependencyResolutionError(e, depName, dependentNodeName, dagDefinition, requestId));
     }
 
-    // handleDependencyResult 方法已被移除
-
-    // waitForDependencyEvents 方法已被移除
-
-    // handleDependencyEventStreamError 方法已被移除
-
     /**
      * 创建依赖名称到其 NodeResult 的映射条目。
      * 输入 NodeResult<C, R, ?>，输出 Map.Entry<String, NodeResult<C, ?, ?>>
      */
     private <C, R> Map.Entry<String, NodeResult<C, ?, ?>> createMapEntry(String depName, NodeResult<C, R, ?> nodeResult) {
-        // NodeResult<C, R, ?> 可以安全地赋值给 NodeResult<C, ?, ?>
         return new AbstractMap.SimpleEntry<>(depName, nodeResult);
     }
 
@@ -297,9 +288,8 @@ public class StandardNodeExecutor {
             String requestId) {
 
         String dagName = dagDefinition.getDagName();
-        log.error("[RequestId: {}] DAG '{}': 获取节点 '{}' 的依赖 '{}' 的 NodeResult 失败: {}", // 修改日志
+        log.error("[RequestId: {}] DAG '{}': 获取节点 '{}' 的依赖 '{}' 的 NodeResult 失败: {}",
                 requestId, dagName, dependentNodeName, depName, e.getMessage(), e);
-        // 将错误传播下去，会导致整个依赖解析失败 (collectMap 会失败)
         return Mono.error(e);
     }
 
@@ -310,14 +300,13 @@ public class StandardNodeExecutor {
     private <C, P, T> Mono<NodeResult<C, P, T>> executeNodeInternal(
             DagNode<C, P, T> node,
             C context,
-            Map<String, NodeResult<C, ?, ?>> dependencyResults, // 依赖结果是通配符事件类型
+            Map<String, NodeResult<C, ?, ?>> dependencyResults,
             Duration timeout,
             String requestId,
             String dagName) {
 
         String nodeName = node.getName();
-        Class<P> expectedPayloadType = node.getPayloadType(); // 节点声明的 Payload 类型
-        // T 是节点声明的 Event 类型，由 node.execute 决定
+        Class<P> expectedPayloadType = node.getPayloadType();
 
         return Mono.defer(() -> {
                     log.info("[RequestId: {}] DAG '{}': 开始执行节点 '{}' (Payload: {}, Impl: {}) 逻辑...",
@@ -327,25 +316,23 @@ public class StandardNodeExecutor {
                     // 如果是聚合节点，这个 Mono 会在聚合完成后才返回 NodeResult
                     return node.execute(context, dependencyResults);
                 })
-                .subscribeOn(nodeExecutionScheduler) // 在指定的调度器上执行节点逻辑
-                .timeout(timeout) // 应用节点执行超时 (针对 node.execute() 返回的 Mono)
+                .subscribeOn(nodeExecutionScheduler)
+                .timeout(timeout)
                 .doOnSuccess(result -> validateAndLogResult(result, expectedPayloadType, nodeName, dagName, requestId))
-                .doOnError(error -> { // 捕获同步异常或 Mono.error
-                    if (!(error instanceof TimeoutException)) { // 超时异常由 onErrorResume 处理
+                .doOnError(error -> {
+                    if (!(error instanceof TimeoutException)) {
                         log.error(
                                 "[RequestId: {}] DAG '{}': 节点 '{}' 执行期间失败 (非超时): {}",
                                 requestId, dagName, nodeName, error.getMessage(), error);
                     }
-                    // 注意：如果 node.execute() 返回的 Mono 内部的流发生错误，这里的 doOnError 可能不会捕获到，
-                    // 错误将在流的订阅者处被观察到。
                 })
-                .onErrorResume(error -> handleExecutionError( // 调用 handleExecutionError
+                .onErrorResume(error -> handleExecutionError(
                         error,
                         context,
-                        node,      // <--- 传递 node 实例
+                        node,
                         timeout,
                         requestId,
-                        dagName    // <--- 传递 dagName
+                        dagName
                 ));
     }
 
@@ -353,8 +340,8 @@ public class StandardNodeExecutor {
      * 验证节点返回的 NodeResult 并记录日志。
      */
     private <C, P, T> void validateAndLogResult(
-            NodeResult<C, P, T> result, // 节点实际返回的结果
-            Class<P> expectedPayloadType, // 节点声明的 Payload 类型
+            NodeResult<C, P, T> result,
+            Class<P> expectedPayloadType,
             String nodeName,
             String dagName,
             String requestId) {
@@ -364,18 +351,23 @@ public class StandardNodeExecutor {
         if (result.getPayloadType() == null) {
             log.warn("[RequestId: {}] DAG '{}': 节点 '{}' 返回的 NodeResult 的 Payload 类型为 null!",
                     requestId, dagName, nodeName);
-            // 根据你的设计决定是否允许 payloadType 为 null
         } else if (!expectedPayloadType.equals(result.getPayloadType())) {
-            log.error("[RequestId: {}] DAG '{}': 节点 '{}' 返回的 NodeResult 的 Payload 类型 ({}) 与其声明的 Payload 类型 ({}) 不匹配! 这可能导致下游类型转换错误。",
-                    requestId, dagName, nodeName,
-                    result.getPayloadType().getSimpleName(),
-                    expectedPayloadType.getSimpleName());
-            // 考虑是否应该抛出异常
+            // 允许子类兼容，改为 isAssignableFrom 检查
+            if (!expectedPayloadType.isAssignableFrom(result.getPayloadType())) {
+                log.error("[RequestId: {}] DAG '{}': 节点 '{}' 返回的 NodeResult 的 Payload 类型 ({}) 与其声明的 Payload 类型 ({}) 不兼容!",
+                        requestId, dagName, nodeName,
+                        result.getPayloadType().getSimpleName(),
+                        expectedPayloadType.getSimpleName());
+            } else {
+                log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 返回的 Payload 类型 ({}) 是声明类型 ({}) 的子类或实现。",
+                        requestId, dagName, nodeName,
+                        result.getPayloadType().getSimpleName(),
+                        expectedPayloadType.getSimpleName());
+            }
         }
 
         if (result.isSuccess()) {
-            // 检查事件 Flux 是否存在且非空 (对于流式节点，这通常是真的)
-            boolean hasEvents = result.getEvents() != null && result.getEvents() != Flux.<Event<T>>empty(); // 使用通配符检查 empty 单例
+            boolean hasEvents = result.getEvents() != null && result.getEvents() != Flux.<Event<T>>empty();
             log.info("[RequestId: {}] DAG '{}': 节点 '{}' (期望 Payload: {}) 执行成功. Actual Payload Type: {}, Payload: {}, HasEvents: {}",
                     requestId, dagName, nodeName, expectedPayloadType.getSimpleName(),
                     result.getPayloadType() != null ? result.getPayloadType().getSimpleName() : "null",
@@ -395,13 +387,12 @@ public class StandardNodeExecutor {
     private <C, P, T> Mono<NodeResult<C, P, T>> handleExecutionError(
             Throwable error,
             C context,
-            DagNode<C, P, T> node, // <--- 接收 node 实例
+            DagNode<C, P, T> node,
             Duration timeout,
             String requestId,
-            String dagName) {      // <--- 接收 dagName
+            String dagName) {
 
         String nodeName = node.getName();
-
         Throwable capturedError;
         if (error instanceof TimeoutException) {
             String timeoutMsg = String.format("节点 '%s' 在 DAG '%s' 中执行 Mono<NodeResult> 超时 (超过 %s)", nodeName, dagName, timeout);
@@ -413,8 +404,6 @@ public class StandardNodeExecutor {
                     requestId, dagName, nodeName, error.getMessage(), error);
             capturedError = error;
         }
-
-        // 创建失败的 NodeResult，现在可以提供 eventType
         NodeResult<C, P, T> failureResult = NodeResult.failure(
                 context,
                 capturedError,
