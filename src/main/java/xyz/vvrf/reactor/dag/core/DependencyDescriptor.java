@@ -3,19 +3,19 @@ package xyz.vvrf.reactor.dag.core;
 import java.util.Objects;
 
 /**
- * 描述一个 DAG 节点的依赖项，包括名称和期望的输入类型。
+ * 描述一个 DAG 节点的依赖项，包括名称和期望的输入类型 (Payload Type)。
  *
  * @author ruifeng.wen
  */
 public final class DependencyDescriptor {
     private final String name;
-    private final Class<?> requiredType;
+    private final Class<?> requiredType; // 这个类型指的是依赖节点需要提供的 Payload 类型
 
     /**
      * 创建依赖描述符
      *
      * @param name 依赖节点的名称
-     * @param requiredType 依赖节点需要的输出类型
+     * @param requiredType 依赖节点需要输出的 Payload 类型
      * @throws NullPointerException 如果名称或类型为null
      */
     public DependencyDescriptor(String name, Class<?> requiredType) {
@@ -33,9 +33,9 @@ public final class DependencyDescriptor {
     }
 
     /**
-     * 获取依赖节点需要的输出类型
+     * 获取依赖节点需要输出的 Payload 类型
      *
-     * @return 依赖类型的Class对象
+     * @return 依赖 Payload 类型的Class对象
      */
     public Class<?> getRequiredType() {
         return requiredType;
@@ -56,6 +56,7 @@ public final class DependencyDescriptor {
 
     @Override
     public String toString() {
-        return String.format("依赖[%s:%s]", name, requiredType.getSimpleName());
+        // 明确指出是 Payload 类型
+        return String.format("依赖[%s:Payload(%s)]", name, requiredType.getSimpleName());
     }
 }

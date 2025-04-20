@@ -34,27 +34,27 @@ public interface DagDefinition<C> {
     /**
      * 根据名称和期望的负载类型获取节点。
      *
-     * @param <T> 负载类型
-     * @param nodeName 节点名称
-     * @param payloadType 负载类型
-     * @return 包含节点的 Optional，如果节点不存在则为空
+     * @param <P>         期望的节点 Payload 类型
+     * @param nodeName    节点名称
+     * @param payloadType 期望的 Payload 类型
+     * @return 包含节点的 Optional，如果节点不存在或类型不匹配则为空。返回的节点事件类型为通配符。
      */
-    <T> Optional<DagNode<C, T>> getNode(String nodeName, Class<T> payloadType);
+    <P> Optional<DagNode<C, P, ?>> getNode(String nodeName, Class<P> payloadType);
 
     /**
-     * 根据名称获取节点（不关心负载类型）。
+     * 根据名称获取节点（不关心负载和事件类型）。
      *
      * @param nodeName 节点名称
      * @return 包含节点的 Optional，如果节点不存在则为空
      */
-    Optional<DagNode<C, ?>> getNodeAnyType(String nodeName);
+    Optional<DagNode<C, ?, ?>> getNodeAnyType(String nodeName);
 
     /**
      * 获取此 DAG 中的所有节点。
      *
-     * @return 所有节点的集合
+     * @return 所有节点的集合 (Payload 和 Event 类型为通配符)
      */
-    Collection<DagNode<C, ?>> getAllNodes();
+    Collection<DagNode<C, ?, ?>> getAllNodes();
 
     /**
      * 获取计算好的拓扑执行顺序。
@@ -65,22 +65,22 @@ public interface DagDefinition<C> {
     List<String> getExecutionOrder();
 
     /**
-     * 获取指定节点支持的所有输出负载类型。
+     * 获取指定节点支持的所有输出 Payload 类型。
      *
      * @param nodeName 节点名称
-     * @return 该节点支持的所有输出类型集合
+     * @return 该节点支持的所有 Payload 类型集合
      */
     Set<Class<?>> getSupportedOutputTypes(String nodeName);
 
     /**
-     * 检查指定节点是否支持特定的输出负载类型。
+     * 检查指定节点是否支持特定的输出 Payload 类型。
      *
-     * @param <T> 负载类型
-     * @param nodeName 节点名称
-     * @param payloadType 需要检查的负载类型
-     * @return 如果节点支持该负载类型则返回 true
+     * @param <P>         Payload 类型
+     * @param nodeName    节点名称
+     * @param payloadType 需要检查的 Payload 类型
+     * @return 如果节点支持该 Payload 类型则返回 true
      */
-    <T> boolean supportsOutputType(String nodeName, Class<T> payloadType);
+    <P> boolean supportsOutputType(String nodeName, Class<P> payloadType);
 
     /**
      * 初始化 DAG 定义。
@@ -90,4 +90,6 @@ public interface DagDefinition<C> {
      * @throws IllegalStateException 如果验证失败。
      */
     void initialize() throws IllegalStateException;
+
+    boolean isInitialized();
 }

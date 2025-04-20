@@ -12,8 +12,6 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.DataParalleDag;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
-import xyz.vvrf.reactor.dag.example.dataProcessingDag.DataProcessingDag;
-import xyz.vvrf.reactor.dag.example.dataProcessingDag.ProcessingContext;
 import xyz.vvrf.reactor.dag.spring.SpringDagEngine;
 
 import java.util.UUID;
@@ -34,30 +32,27 @@ public class DagUsageExample {
     private SpringDagEngine dagEngine;
 
     @Autowired
-    private DataProcessingDag dataProcessingDag;
-
-    @Autowired
     private DataParalleDag dataParalleDag;
 
     /**
      * 处理数据的API端点，以SSE方式返回处理过程
      */
-    @GetMapping(value = "/process", produces = "text/event-stream")
-    public Flux<ServerSentEvent<?>> processData(
-            @RequestParam(defaultValue = "100") int dataSize,
-            @RequestParam(defaultValue = "false") boolean includeEnrichment) {
-
-        // 创建处理上下文
-        ProcessingContext context = new ProcessingContext();
-        context.setDataSize(dataSize);
-        context.setIncludeEnrichment(includeEnrichment);
-
-        // 生成请求ID
-        String requestId = UUID.randomUUID().toString();
-
-        // 执行DAG并返回事件流
-        return dagEngine.execute(context, requestId, dataProcessingDag);
-    }
+//    @GetMapping(value = "/process", produces = "text/event-stream")
+//    public Flux<ServerSentEvent<?>> processData(
+//            @RequestParam(defaultValue = "100") int dataSize,
+//            @RequestParam(defaultValue = "false") boolean includeEnrichment) {
+//
+//        // 创建处理上下文
+//        ProcessingContext context = new ProcessingContext();
+//        context.setDataSize(dataSize);
+//        context.setIncludeEnrichment(includeEnrichment);
+//
+//        // 生成请求ID
+//        String requestId = UUID.randomUUID().toString();
+//
+//        // 执行DAG并返回事件流
+//        return dagEngine.execute(context, requestId, dataProcessingDag);
+//    }
 
     @GetMapping(value = "/process-paralle", produces = "text/event-stream")
     public Flux<ServerSentEvent<?>> paralleData() {

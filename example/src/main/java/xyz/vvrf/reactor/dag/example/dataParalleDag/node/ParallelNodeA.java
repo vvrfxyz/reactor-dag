@@ -1,16 +1,8 @@
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
-/**
- * reactor-dag
- *
- * @author ruifeng.wen
- * @date 4/19/25
- */
-
 import org.springframework.stereotype.Component;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
+// Removed unused Schedulers import
 import xyz.vvrf.reactor.dag.core.DagNode;
 import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
 import xyz.vvrf.reactor.dag.core.NodeResult;
@@ -25,11 +17,11 @@ import java.util.concurrent.TimeUnit;
  * A node designed to run in parallel with other similar nodes.
  * Depends on FirstNode.
  *
- * @author Your Name
- * @date Today's Date
+ * @author Your Name (modified)
+ * @date Today's Date (modified)
  */
 @Component
-public class ParallelNodeA implements DagNode<ParalleContext, String> {
+public class ParallelNodeA implements DagNode<ParalleContext, String, Void> { // Added Void event type
 
     @Override
     public String getName() {
@@ -38,7 +30,6 @@ public class ParallelNodeA implements DagNode<ParalleContext, String> {
 
     @Override
     public List<DependencyDescriptor> getDependencies() {
-        // Depends on FirstNode
         return List.of(new DependencyDescriptor("FirstNode", String.class));
     }
 
@@ -48,11 +39,16 @@ public class ParallelNodeA implements DagNode<ParalleContext, String> {
     }
 
     @Override
-    public Mono<NodeResult<ParalleContext, String>> execute(ParalleContext context, Map<String, NodeResult<ParalleContext, ?>> dependencyResults) {
-        // Access dependency result if needed
-        // NodeResult<ParalleContext, ?> firstNodeResult = dependencyResults.get("FirstNode");
-        // String firstNodePayload = (String) firstNodeResult.getPayload(); // Assuming getPayload() exists
-        // System.out.println(getName() + " received payload from FirstNode: " + firstNodePayload);
+    public Class<Void> getEventType() {
+        return  Void.class;
+    }
+
+    @Override
+    public Mono<NodeResult<ParalleContext, String, Void>> execute(ParalleContext context, Map<String, NodeResult<ParalleContext, ?, ?>> dependencyResults) {
+        // Example of accessing dependency (optional)
+        dependencyResults.get("FirstNode")
+                .getPayload() // Access Optional<Payload>
+                .ifPresent(payload -> System.out.println(getName() + " received payload from FirstNode: " + payload));
 
         return Mono.fromCallable(() -> {
             String threadName = Thread.currentThread().getName();
@@ -63,13 +59,19 @@ public class ParallelNodeA implements DagNode<ParalleContext, String> {
                 TimeUnit.MILLISECONDS.sleep(500); // Longer delay
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                // In a real app, return Mono.error or a failed NodeResult
-                throw new RuntimeException(e);
+                return NodeResult.<ParalleContext, String, Void>failure(
+                        context, e, String.class, Void.class);
             }
 
             String resultPayload = getName() + " executed successfully on " + threadName;
             System.out.println(getName() + " finished.");
-            return new NodeResult<>(context, Flux.empty(),String.class);
+
+            // Use the correct static factory method
+            return NodeResult.success(context, resultPayload, String.class, Void.class);
+        }).onErrorResume(error -> {
+            System.err.println("Error executing " + getName() + ": " + error.getMessage());
+            return Mono.just(NodeResult.<ParalleContext, String, Void>failure(
+                    context, error, String.class, Void.class));
         });
     }
 }

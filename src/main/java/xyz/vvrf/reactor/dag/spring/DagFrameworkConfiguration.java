@@ -6,6 +6,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.PropertySource;
+import reactor.core.scheduler.Scheduler; // Keep import if needed
+import reactor.core.scheduler.Schedulers; // Keep import if needed
 import xyz.vvrf.reactor.dag.impl.StandardNodeExecutor;
 
 import java.time.Duration;
@@ -14,7 +16,7 @@ import java.time.Duration;
  * Reactor DAG框架的Spring配置类
  * 提供DAG引擎所需的组件Bean
  *
- * @author ruifeng.wen
+ * @author ruifeng.wen (modified)
  */
 @Configuration
 @ComponentScan(basePackages = "xyz.vvrf.reactor.dag.spring")
@@ -23,16 +25,16 @@ public class DagFrameworkConfiguration {
 
     /**
      * 创建标准节点执行器
+     * 注意：这个 Bean 定义会覆盖 DagFrameworkAutoConfiguration 中的 ConditionalOnMissingBean 定义。
      *
      * @param defaultNodeTimeout 默认节点执行超时时间
-     * @param dependencyStreamTimeout 依赖流等待超时时间
      * @return 标准节点执行器实例
      */
     @Bean
     public StandardNodeExecutor nodeExecutor(
-            @Value("${dag.node.default.timeout:30s}") Duration defaultNodeTimeout,
-            @Value("${dag.dependency.stream.timeout:300s}") Duration dependencyStreamTimeout) {
-        return new StandardNodeExecutor(defaultNodeTimeout, dependencyStreamTimeout);
+            @Value("${dag.node.default.timeout:30s}") Duration defaultNodeTimeout
+    ) {
+        return new StandardNodeExecutor(defaultNodeTimeout);
     }
 
     /**

@@ -6,15 +6,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.core.publisher.SignalType;
+// Imports remain the same
 import xyz.vvrf.reactor.dag.core.DagDefinition;
-import xyz.vvrf.reactor.dag.core.Event;
-import xyz.vvrf.reactor.dag.core.NodeResult;
 import xyz.vvrf.reactor.dag.impl.StandardDagEngine;
 import xyz.vvrf.reactor.dag.impl.StandardNodeExecutor;
 
 import java.time.Duration;
+import java.util.Objects; // Import Objects
 
 /**
  * Spring集成的DAG执行引擎 - 提供与Spring框架的无缝集成并发送ServerSentEvent流
@@ -30,13 +28,14 @@ public class SpringDagEngine {
     /**
      * 创建SpringDagEngine实例
      *
-     * @param nodeExecutor 节点执行器
+     * @param nodeExecutor 节点执行器 (The one configured without stream timeout)
      * @param cacheTtl 缓存生存时间
      */
     @Autowired
     public SpringDagEngine(
             StandardNodeExecutor nodeExecutor,
             @Value("${dag.engine.cache.ttl:5m}") Duration cacheTtl) {
+        Objects.requireNonNull(nodeExecutor, "StandardNodeExecutor cannot be null");
         this.dagEngine = new StandardDagEngine(nodeExecutor, cacheTtl);
         log.info("SpringDagEngine 初始化完成，缓存TTL: {}", cacheTtl);
     }
@@ -66,12 +65,21 @@ public class SpringDagEngine {
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
     private ServerSentEvent<?> convertToServerSentEvent(xyz.vvrf.reactor.dag.core.Event<?> event) {
-        return ServerSentEvent.builder()
-                .event(event.getEventType())
-                .id(event.getId())
-                .data(event.getData())
-                .comment(event.getComment())
-                .build();
-    }
+        ServerSentEvent.Builder builder = ServerSentEvent.builder()
+                .data(event.getData());
 
+        if (event.getEventType() != null) {
+            builder.event(event.getEventType());
+        }
+
+        if (event.getId() != null) {
+            builder.id(event.getId());
+        }
+
+        if (event.getComment() != null) {
+            builder.comment(event.getComment());
+        }
+
+        return builder.build();
+    }
 }
