@@ -57,19 +57,19 @@ public class FirstNode implements DagNode<ParalleContext, String, Void> { // Add
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 // Return a failure result instead of throwing RuntimeException in reactive chain
-                return NodeResult.failure(context, e, String.class, Void.class);
+                return NodeResult.failure(context, e, this);
             }
 
             String resultPayload = getName() + " executed successfully on " + threadName;
             System.out.println(getName() + " finished.");
 
             // Use the correct static factory method
-            return NodeResult.success(context, resultPayload, String.class,Void.class);
+            return NodeResult.success(context, resultPayload, this);
         }).onErrorResume(error -> {
             // Handle errors from fromCallable (like the RuntimeException if sleep was interrupted before fix)
             System.err.println("Error executing " + getName() + ": " + error.getMessage());
             return Mono.just(NodeResult.<ParalleContext, String, Void>failure(
-                    context, error, String.class,Void.class));
+                    context, error, this));
         });
     }
 }

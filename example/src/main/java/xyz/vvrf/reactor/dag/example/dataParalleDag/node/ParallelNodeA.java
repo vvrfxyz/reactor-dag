@@ -59,19 +59,19 @@ public class ParallelNodeA implements DagNode<ParalleContext, String, Void> { //
                 TimeUnit.MILLISECONDS.sleep(500); // Longer delay
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return NodeResult.<ParalleContext, String, Void>failure(
-                        context, e, String.class, Void.class);
+                return NodeResult.failure(
+                        context, e, this);
             }
 
             String resultPayload = getName() + " executed successfully on " + threadName;
             System.out.println(getName() + " finished.");
 
             // Use the correct static factory method
-            return NodeResult.success(context, resultPayload, String.class, Void.class);
+            return NodeResult.success(context, resultPayload, this);
         }).onErrorResume(error -> {
             System.err.println("Error executing " + getName() + ": " + error.getMessage());
-            return Mono.just(NodeResult.<ParalleContext, String, Void>failure(
-                    context, error, String.class, Void.class));
+            return Mono.just(NodeResult.failure(
+                    context, error, this));
         });
     }
 }

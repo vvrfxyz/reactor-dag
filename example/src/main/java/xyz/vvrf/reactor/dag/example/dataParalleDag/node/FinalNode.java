@@ -76,18 +76,18 @@ public class FinalNode implements DagNode<ParalleContext, String, Void> { // Add
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return NodeResult.<ParalleContext, String, Void>failure(
-                        context, e, String.class, Void.class);
+                        context, e, this);
             }
 
             String resultPayload = getName() + " finished successfully on " + threadName + ". Aggregated: " + aggregatedPayloads;
             System.out.println(getName() + " finished.");
 
             // Use the correct static factory method
-            return NodeResult.success(context, resultPayload, String.class, Void.class);
+            return NodeResult.success(context, resultPayload, this);
         }).onErrorResume(error -> {
             System.err.println("Error executing " + getName() + ": " + error.getMessage());
             return Mono.just(NodeResult.<ParalleContext, String, Void>failure(
-                    context, error, String.class, Void.class));
+                    context, error, this));
         });
     }
 }

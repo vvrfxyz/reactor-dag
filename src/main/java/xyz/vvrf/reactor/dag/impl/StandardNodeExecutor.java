@@ -401,8 +401,6 @@ public class StandardNodeExecutor {
             String dagName) {      // <--- 接收 dagName
 
         String nodeName = node.getName();
-        Class<P> expectedPayloadType = node.getPayloadType(); // 从 node 获取 Payload 类型
-        Class<T> expectedEventType = node.getEventType();   // <--- 从 node 获取 Event 类型
 
         Throwable capturedError;
         if (error instanceof TimeoutException) {
@@ -420,8 +418,7 @@ public class StandardNodeExecutor {
         NodeResult<C, P, T> failureResult = NodeResult.failure(
                 context,
                 capturedError,
-                expectedPayloadType, // 使用节点声明的 Payload 类型
-                expectedEventType    // <--- 使用节点声明的 Event 类型
+                node
         );
         return Mono.just(failureResult);
     }
