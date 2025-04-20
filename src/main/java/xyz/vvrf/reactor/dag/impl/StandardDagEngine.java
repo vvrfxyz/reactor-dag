@@ -25,21 +25,32 @@ import java.util.UUID;
 public class StandardDagEngine {
 
     private final StandardNodeExecutor nodeExecutor;
-    private final Duration cacheTtl; // 节点结果缓存的 TTL
+    private final Duration cacheTtl;
+    private final int concurrencyLevel; // 新增并发度配置
 
     /**
      * 创建标准DAG执行引擎
      *
      * @param nodeExecutor 节点执行器
      * @param cacheTtl     节点执行结果在请求级别缓存的生存时间
+     * @param concurrencyLevel flatMap 操作的并发度 (例如，用于处理节点的数量)
      */
-    public StandardDagEngine(StandardNodeExecutor nodeExecutor, Duration cacheTtl) {
+    public StandardDagEngine(StandardNodeExecutor nodeExecutor, Duration cacheTtl, int concurrencyLevel) {
         this.nodeExecutor = Objects.requireNonNull(nodeExecutor, "NodeExecutor 不能为空");
         this.cacheTtl = Objects.requireNonNull(cacheTtl, "Cache TTL 不能为空");
+        if (concurrencyLevel <= 0) {
+            throw new IllegalArgumentException("Concurrency level must be positive.");
+        }
+        this.concurrencyLevel = concurrencyLevel;
         if (cacheTtl.isNegative() || cacheTtl.isZero()) {
             log.warn("StandardDagEngine 配置的 cacheTtl <= 0，缓存将被禁用或立即过期: {}", cacheTtl);
         }
-        log.info("StandardDagEngine 初始化完成，节点结果缓存TTL: {}", this.cacheTtl);
+        log.info("StandardDagEngine 初始化完成，节点结果缓存TTL: {}, 并发度: {}", this.cacheTtl, this.concurrencyLevel);
+    }
+
+    public StandardDagEngine(StandardNodeExecutor nodeExecutor, Duration cacheTtl) {
+        // 提供一个合理的默认值，或者仍使用 CPU 核心数
+        this(nodeExecutor, cacheTtl, Math.max(1, Runtime.getRuntime().availableProcessors()));
     }
 
     /**
@@ -95,7 +106,7 @@ public class StandardDagEngine {
         // merge 会并发地合并所有源 Flux 发出的事件
         Flux<Event<?>> nodesEventFlux = Flux.fromIterable(nodeNames)
                 .flatMap(nodeName -> processNodeAndGetEvents(nodeName, initialContext, requestCache, actualRequestId, dagDefinition),
-                        Runtime.getRuntime().availableProcessors()); // 控制并发度
+                        this.concurrencyLevel);
 
         // 合并所有节点的事件流，并添加日志和清理逻辑
         return mergeStreamsAndFinalize(nodesEventFlux, requestCache, actualRequestId, dagName);

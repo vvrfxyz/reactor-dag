@@ -41,14 +41,14 @@ public class FinalNode implements DagNode<ParalleContext, String, Void> {
      * Executes the final node logic, aggregating results from parallel nodes.
      *
      * @param context      The parallel context.
-     * @param dependencies Accessor for dependency results. <--- Updated Javadoc
+     * @param dependencies Accessor for dependency results.
      * @return A Mono containing the final result.
      */
     @Override
     public Mono<NodeResult<ParalleContext, String, Void>> execute(ParalleContext context, DependencyAccessor<ParalleContext> dependencies) { // <--- Signature changed
         return Mono.fromCallable(() -> {
             String threadName = Thread.currentThread().getName();
-            System.out.println("Executing " + getName() + " on thread: " + threadName);
+            System.out.println("Executing " + this.getClass().getSimpleName() + " on thread: " + threadName);
 
             // Aggregate results using the DependencyAccessor
             String aggregatedPayloads = EXPECTED_DEPENDENCIES.stream()
@@ -64,7 +64,7 @@ public class FinalNode implements DagNode<ParalleContext, String, Void> {
                     })
                     .collect(Collectors.joining("; "));
 
-            System.out.println(getName() + " received aggregated results: " + aggregatedPayloads);
+            System.out.println(this.getClass().getSimpleName() + " received aggregated results: " + aggregatedPayloads);
 
             // Simulate final processing
             try {
@@ -75,12 +75,12 @@ public class FinalNode implements DagNode<ParalleContext, String, Void> {
                         context, e, this);
             }
 
-            String resultPayload = getName() + " finished successfully on " + threadName + ". Aggregated: " + aggregatedPayloads;
-            System.out.println(getName() + " finished.");
+            String resultPayload = this.getClass().getSimpleName() + " finished successfully on " + threadName + ". Aggregated: " + aggregatedPayloads;
+            System.out.println(this.getClass().getSimpleName() + " finished.");
 
             return NodeResult.success(context, resultPayload, this);
         }).onErrorResume(error -> {
-            System.err.println("Error executing " + getName() + ": " + error.getMessage());
+            System.err.println("Error executing " + this.getClass().getSimpleName() + ": " + error.getMessage());
             return Mono.just(NodeResult.<ParalleContext, String, Void>failure(
                     context, error, this));
         });

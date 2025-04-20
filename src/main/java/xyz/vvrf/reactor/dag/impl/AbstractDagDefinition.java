@@ -24,12 +24,8 @@ import java.util.stream.Collectors;
 @Slf4j
 public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
-    // ... (nodesByType, nodesByName 保持不变)
     private final Map<String, DagNode<C, ?, ?>> nodesByName = new ConcurrentHashMap<>();
-    private final Map<String, Map<Class<?>, DagNode<C, ?, ?>>> nodesByType = new ConcurrentHashMap<>(); // 保留用于可能的类型查找，但主要依赖 nodesByName
 
-    // 新增：存储由外部（如 ChainBuilder）定义的显式依赖
-    // Key: Node Name, Value: List of Dependency Descriptors for this node
     private final Map<String, List<DependencyDescriptor>> explicitDependencies = new ConcurrentHashMap<>();
 
     @Getter
@@ -60,7 +56,6 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             } catch (IllegalStateException e) {
                 log.error("[{}] DAG '{}' 节点注册失败: {}", contextType.getSimpleName(), getDagName(), e.getMessage());
                 nodesByName.clear();
-                nodesByType.clear();
                 explicitDependencies.clear(); // 清理显式依赖
                 this.initialized = false;
                 throw e;
@@ -179,7 +174,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
     private void validateDependencies() {
         log.debug("[{}] DAG '{}': 验证依赖关系 (使用有效依赖)...", contextType.getSimpleName(), getDagName());
         for (DagNode<C, ?, ?> node : getAllNodes()) {
-            String nodeName = node.getName();
+            String nodeName = node.getClass().getSimpleName();
             // *** 使用 getEffectiveDependencies ***
             List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
             if (dependencies.isEmpty()) continue;
@@ -262,7 +257,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
         // 构建图和计算入度
         for (DagNode<C, ?, ?> node : nodesByName.values()) {
-            String dependerName = node.getName(); // 当前节点
+            String dependerName = node.getClass().getSimpleName(); // 当前节点
             // *** 使用 getEffectiveDependencies ***
             List<DependencyDescriptor> dependencies = getEffectiveDependencies(dependerName);
 
@@ -339,7 +334,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         }
 
         for (DagNode<C, ?, ?> node : getAllNodes()) {
-            String nodeName = node.getName();
+            String nodeName = node.getClass().getSimpleName();
             // *** 使用 getEffectiveDependencies ***
             List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
             if (!dependencies.isEmpty()) {
@@ -424,7 +419,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
         // 添加边 (基于有效依赖)
         for (DagNode<C, ?, ?> node : getAllNodes()) {
-            String nodeName = node.getName();
+            String nodeName = node.getClass().getSimpleName();
             // *** 使用 getEffectiveDependencies ***
             List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
             if (!dependencies.isEmpty()) {
@@ -447,7 +442,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
     private void registerNodes(List<DagNode<C, ?, ?>> nodes) throws IllegalStateException {
         log.debug("[{}] DAG '{}': 开始注册 {} 个提供的节点...", contextType.getSimpleName(), getDagName(), nodes.size());
         for (DagNode<C, ?, ?> node : nodes) {
-            String nodeName = node.getName();
+            String nodeName = node.getClass().getSimpleName();
             Class<?> payloadType = node.getPayloadType();
 
             if (nodeName == null || nodeName.trim().isEmpty()) {
@@ -475,8 +470,6 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             }
 
             nodesByName.put(nodeName, node);
-            Map<Class<?>, DagNode<C, ?, ?>> typeMap = nodesByType.computeIfAbsent(nodeName, k -> new ConcurrentHashMap<>());
-            typeMap.put(payloadType, node);
 
             log.info("[{}] DAG '{}': 已注册节点: '{}' (Payload 类型: {}, 实现: {})",
                     contextType.getSimpleName(), getDagName(), nodeName, payloadType.getSimpleName(), node.getClass().getSimpleName());
@@ -518,12 +511,12 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         if (depNode.getPayloadType().equals(requiredPayloadType) || requiredPayloadType.isAssignableFrom(depNode.getPayloadType())) {
             // 类型匹配或兼容，理论上不应进入此 format 方法，但作为防御
             return String.format("内部错误：节点 '%s' 依赖 '%s' 类型 '%s'，但验证逻辑出错。",
-                    node.getName(), depName, requiredPayloadType.getSimpleName());
+                    node.getClass().getSimpleName(), depName, requiredPayloadType.getSimpleName());
         } else {
             // 依赖节点存在，但其唯一的 Payload 类型不匹配
             return String.format(
                     "节点 '%s' (%s) 依赖节点 '%s' 输出 Payload 类型 '%s'，但节点 '%s' (%s) 实际输出 Payload 类型 '%s'",
-                    node.getName(), node.getClass().getSimpleName(),
+                    node.getClass().getSimpleName(), node.getClass().getSimpleName(),
                     depName, requiredPayloadType.getSimpleName(),
                     depName, depNode.getClass().getSimpleName(), depNode.getPayloadType().getSimpleName()
             );

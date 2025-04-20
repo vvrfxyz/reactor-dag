@@ -1,50 +1,64 @@
 package xyz.vvrf.reactor.dag.spring.boot;
 
+import org.springframework.beans.factory.ObjectProvider; // 用于可选注入
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Import;
-import reactor.core.scheduler.Scheduler; // Assuming Scheduler might be needed later, keep import for now
-import reactor.core.scheduler.Schedulers; // Import Schedulers if needed for default
+// 移除: import org.springframework.context.annotation.Import;
+// 移除: import xyz.vvrf.reactor.dag.spring.DagFrameworkConfiguration;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 import xyz.vvrf.reactor.dag.impl.StandardNodeExecutor;
-import xyz.vvrf.reactor.dag.spring.DagFrameworkConfiguration;
-import xyz.vvrf.reactor.dag.spring.SpringDagEngine;
-
-import java.time.Duration;
+import xyz.vvrf.reactor.dag.spring.SpringDagEngine; // 保留此导入
 
 /**
- * Reactor DAG框架的Spring Boot自动配置类
- * 支持通过Spring Boot应用.properties或.yml配置框架参数
+ * Reactor DAG框架的Spring Boot自动配置类。
+ * 基于 DagFrameworkProperties 配置框架。
+ * 如果用户未定义，则提供默认的 Bean。
  *
  * @author ruifeng.wen (modified)
  */
 @Configuration
-@EnableConfigurationProperties(DagFrameworkProperties.class)
-@Import(DagFrameworkConfiguration.class)
+@EnableConfigurationProperties(DagFrameworkProperties.class) // 启用属性绑定
 public class DagFrameworkAutoConfiguration {
 
     /**
-     * 当没有现有的NodeExecutor时，创建一个基于属性配置的NodeExecutor
-     * 注意：如果 DagFrameworkConfiguration 也定义了此 Bean，此条件可能不生效。
+     * 如果上下文中不存在 StandardNodeExecutor Bean，则提供一个默认的实例。
+     * 使用 DagFrameworkProperties 进行配置。
+     * 允许用户自定义用于节点执行的 Scheduler Bean。
+     *
+     * @param properties 绑定的配置属性。
+     * @param nodeExecutionSchedulerProvider 用户可选提供的 Scheduler Bean。
+     *                               如果不存在，则默认为 Schedulers.boundedElastic()。
+     * @return StandardNodeExecutor 实例。
      */
     @Bean
     @ConditionalOnMissingBean
-    public StandardNodeExecutor nodeExecutor(DagFrameworkProperties properties) {
+    public StandardNodeExecutor standardNodeExecutor(
+            DagFrameworkProperties properties,
+            ObjectProvider<Scheduler> nodeExecutionSchedulerProvider
+    ) {
+        Scheduler scheduler = nodeExecutionSchedulerProvider.getIfAvailable(Schedulers::boundedElastic);
         return new StandardNodeExecutor(
-                properties.getNode().getDefaultTimeout()
+                properties.getNode().getDefaultTimeout(),
+                scheduler
         );
     }
 
     /**
-     * 当没有现有的SpringDagEngine时，创建一个基于属性配置的SpringDagEngine
+     * 如果上下文中不存在 SpringDagEngine Bean，则提供一个默认的实例。
+     * 使用 DagFrameworkProperties 进行配置。
+     *
+     * @param nodeExecutor StandardNodeExecutor Bean (默认的或用户自定义的)。
+     * @param properties   绑定的配置属性。
+     * @return SpringDagEngine 实例。
      */
     @Bean
     @ConditionalOnMissingBean
     public SpringDagEngine springDagEngine(
-            StandardNodeExecutor nodeExecutor, // Correctly depends on the executor bean
+            StandardNodeExecutor nodeExecutor,
             DagFrameworkProperties properties) {
-        return new SpringDagEngine(nodeExecutor, properties.getEngine().getCacheTtl());
+        return new SpringDagEngine(nodeExecutor, properties);
     }
-
 }

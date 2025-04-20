@@ -18,14 +18,6 @@ import java.util.Map;
 public interface DagNode<C, P, T> {
 
     /**
-     * 获取节点名称，默认为类名
-     * @return 节点名称
-     */
-    default String getName() {
-        return getClass().getSimpleName();
-    }
-
-    /**
      * 获取节点依赖列表
      *
      * @return 依赖描述符列表

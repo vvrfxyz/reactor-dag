@@ -192,7 +192,7 @@ public class StandardNodeExecutor {
             final DagDefinition<C> dagDefinition,
             final String requestId) {
 
-        final String nodeName = node.getName();
+        final String nodeName = node.getClass().getSimpleName();
         final String dagName = dagDefinition.getDagName();
 
         // *** 使用 getEffectiveDependencies 获取依赖列表 ***
@@ -304,7 +304,7 @@ public class StandardNodeExecutor {
             String requestId,
             String dagName) {
 
-        String nodeName = node.getName();
+        String nodeName = node.getClass().getSimpleName();
         Class<P> expectedPayloadType = node.getPayloadType();
 
         return Mono.defer(() -> {
@@ -393,7 +393,7 @@ public class StandardNodeExecutor {
             String requestId,
             String dagName) {
 
-        String nodeName = node.getName();
+        String nodeName = node.getClass().getSimpleName();
         Throwable capturedError;
         if (error instanceof TimeoutException) {
             String timeoutMsg = String.format("节点 '%s' 在 DAG '%s' 中执行 Mono<NodeResult> 超时 (超过 %s)", nodeName, dagName, timeout);

@@ -41,7 +41,7 @@ public class FirstNode implements DagNode<ParalleContext, String, Void> {
     public Mono<NodeResult<ParalleContext, String, Void>> execute(ParalleContext context, DependencyAccessor<ParalleContext> dependencies) {
         return Mono.fromCallable(() -> {
             String threadName = Thread.currentThread().getName();
-            System.out.println("Executing " + getName() + " on thread: " + threadName);
+            System.out.println("Executing " + this.getClass().getSimpleName() + " on thread: " + threadName);
 
             // Simulate some work
             try {
@@ -51,12 +51,12 @@ public class FirstNode implements DagNode<ParalleContext, String, Void> {
                 return NodeResult.failure(context, e, this);
             }
 
-            String resultPayload = getName() + " executed successfully on " + threadName;
-            System.out.println(getName() + " finished.");
+            String resultPayload = this.getClass().getSimpleName() + " executed successfully on " + threadName;
+            System.out.println(this.getClass().getSimpleName() + " finished.");
 
             return NodeResult.success(context, resultPayload, this);
         }).onErrorResume(error -> {
-            System.err.println("Error executing " + getName() + ": " + error.getMessage());
+            System.err.println("Error executing " + this.getClass().getSimpleName() + ": " + error.getMessage());
             return Mono.just(NodeResult.<ParalleContext, String, Void>failure(
                     context, error, this));
         });

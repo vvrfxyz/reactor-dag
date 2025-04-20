@@ -58,13 +58,12 @@ public class ChainBuilder<C> {
         String nodeName = getNodeNameFromClass(nodeClass); // 使用辅助方法获取名称
 
         // 确认目标节点已注册
-        if (dagDefinition.getNodeAnyType(nodeName).isEmpty()) {
+        if (!dagDefinition.getNodeAnyType(nodeName).isPresent()) {
             String errorMsg = String.format("目标节点 '%s' (Class: %s) 未在 DagDefinition '%s' 中注册。",
                     nodeName, nodeClass.getName(), dagDefinition.getDagName());
             log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
             throw new IllegalArgumentException(errorMsg);
         }
-
 
         List<DependencyDescriptor> dependencies = new ArrayList<>();
         if (dependencyNodeClasses != null) {

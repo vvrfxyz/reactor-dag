@@ -16,16 +16,17 @@ public final class EventAdapter {
     }
 
     /**
-     * 将Event流转换为Spring的ServerSentEvent流
+     * 将可能包含混合类型的 Event<?> 流转换为 Spring 的 ServerSentEvent<?> 流。
      *
-     * @param <T> 事件数据类型
-     * @param events 源事件流
-     * @return 转换后的ServerSentEvent流
+     * @param events 源事件流 (Flux<Event<?>>)
+     * @return 转换后的 ServerSentEvent 流 (Flux<ServerSentEvent<?>>)
      */
-    public static <T> Flux<ServerSentEvent<T>> toServerSentEvents(Flux<Event<T>> events) {
+    @SuppressWarnings({"unchecked", "rawtypes"}) // 抑制泛型转换警告
+    public static Flux<ServerSentEvent<?>> toServerSentEvents(Flux<Event<?>> events) {
         return events.map(event -> {
-            ServerSentEvent.Builder<T> builder = ServerSentEvent.<T>builder()
-                    .data(event.getData());
+            // Builder 的类型会根据 data() 参数的类型自动推断
+            ServerSentEvent.Builder builder = ServerSentEvent.builder()
+                    .data(event.getData()); // data 是 Object 类型
 
             if (event.getEventType() != null) {
                 builder.event(event.getEventType());
@@ -44,18 +45,21 @@ public final class EventAdapter {
     }
 
     /**
-     * 将Spring的ServerSentEvent流转换为Event流
+     * 将 Spring 的 ServerSentEvent<?> 流转换为 Event<?> 流。
+     * 如果未指定，假定来自 SSE 的数据类型是 Object。
      *
-     * @param <T> 事件数据类型
-     * @param serverSentEvents 源ServerSentEvent流
-     * @return 转换后的Event流
+     * @param serverSentEvents 源 ServerSentEvent 流 (Flux<ServerSentEvent<?>>)
+     * @return 转换后的 Event 流 (Flux<Event<?>>)
      */
-    public static <T> Flux<Event<T>> fromServerSentEvents(Flux<ServerSentEvent<T>> serverSentEvents) {
+    public static Flux<Event<?>> fromServerSentEvents(Flux<ServerSentEvent<?>> serverSentEvents) {
         return serverSentEvents.map(sse ->
+                // 如果知道数据类型，可以使用泛型的 Event.Builder 以确保类型安全。
+                // 否则，直接创建 SimpleEvent 或在必要时强制转换数据。
+                // 这里我们假设数据是 Object。
                 Event.of(
-                        sse.event() != null ? sse.event() : "message",
+                        sse.event() != null ? sse.event() : "message", // SSE 默认事件类型是 "message"
                         sse.id(),
-                        sse.data(),
+                        sse.data(), // data 是 Object 类型
                         sse.comment()
                 )
         );

@@ -90,6 +90,11 @@
       <version>${spring.version}</version>
       <optional>true</optional>
     </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+      <version>2.7.18</version>
+    </dependency>
 
     <!-- 降级为 javax 注解 API (而不是 Jakarta) -->
     <dependency>
