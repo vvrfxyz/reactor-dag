@@ -35,7 +35,7 @@ public class DataParalleDag extends AbstractDagDefinition<ParalleContext> {
 
         Map<String, List<DependencyDescriptor>> explicitDependencies = builder
                 // 定义起点节点 (无依赖)
-                .node(FirstNode.class) // 假设 SessionNode 已注册
+                .node(FirstNode.class)
                 .node(ParallelNodeA.class,FirstNode.class)
                 .node(ParallelNodeB.class,FirstNode.class)
                 .node(ParallelNodeC.class,FirstNode.class)

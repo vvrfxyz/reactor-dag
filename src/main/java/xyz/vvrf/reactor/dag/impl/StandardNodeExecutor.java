@@ -1,7 +1,6 @@
-// standardnodeexecutor.java
 package xyz.vvrf.reactor.dag.impl;
 
-// ... (imports)
+import xyz.vvrf.reactor.dag.core.DependencyAccessor;
 import com.github.benmanes.caffeine.cache.Cache;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
@@ -300,7 +299,7 @@ public class StandardNodeExecutor {
     private <C, P, T> Mono<NodeResult<C, P, T>> executeNodeInternal(
             DagNode<C, P, T> node,
             C context,
-            Map<String, NodeResult<C, ?, ?>> dependencyResults,
+            Map<String, NodeResult<C, ?, ?>> dependencyResultsMap,
             Duration timeout,
             String requestId,
             String dagName) {
@@ -311,10 +310,12 @@ public class StandardNodeExecutor {
         return Mono.defer(() -> {
                     log.info("[RequestId: {}] DAG '{}': 开始执行节点 '{}' (Payload: {}, Impl: {}) 逻辑...",
                             requestId, dagName, nodeName, expectedPayloadType.getSimpleName(), node.getClass().getSimpleName());
-                    // 调用节点的 execute 方法，它应该返回 Mono<NodeResult<C, P, T>>
-                    // 如果是流式节点，这个 Mono 会很快完成并返回包含流引用的 NodeResult
-                    // 如果是聚合节点，这个 Mono 会在聚合完成后才返回 NodeResult
-                    return node.execute(context, dependencyResults);
+
+                    // *** 1. 创建 DependencyAccessor 实例 ***
+                    DependencyAccessor<C> accessor = new DefaultDependencyAccessor<>(dependencyResultsMap);
+
+                    // *** 2. 调用修改后的 node.execute，传入 accessor ***
+                    return node.execute(context, accessor);
                 })
                 .subscribeOn(nodeExecutionScheduler)
                 .timeout(timeout)

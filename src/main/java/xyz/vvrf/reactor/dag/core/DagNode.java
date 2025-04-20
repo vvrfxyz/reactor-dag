@@ -3,6 +3,7 @@ package xyz.vvrf.reactor.dag.core;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -29,7 +30,9 @@ public interface DagNode<C, P, T> {
      *
      * @return 依赖描述符列表
      */
-    List<DependencyDescriptor> getDependencies();
+    default List<DependencyDescriptor> getDependencies() {
+        return Collections.emptyList();
+    }
 
     /**
      * 获取节点输出的 Payload 类型
@@ -46,16 +49,6 @@ public interface DagNode<C, P, T> {
     Class<T> getEventType();
 
     /**
-     * 执行节点逻辑
-     *
-     * @param context 上下文对象
-     * @param dependencyResults 依赖节点的执行结果 (Key: 依赖节点名称, Value: 依赖节点的 NodeResult)
-     *                          依赖节点的 Payload 和 Event 类型是未知的 (用 ? 表示)。
-     * @return 包含执行结果 (Payload 和/或 Events) 的 Mono
-     */
-    Mono<NodeResult<C, P, T>> execute(C context, Map<String, NodeResult<C, ?, ?>> dependencyResults);
-
-    /**
      * 获取节点执行超时，默认为null（使用系统默认值）
      *
      * @return 超时时间，如果不指定则返回null
@@ -63,4 +56,13 @@ public interface DagNode<C, P, T> {
     default Duration getExecutionTimeout() {
         return null;
     }
+
+    /**
+     * 执行节点逻辑。
+     *
+     * @param context      上下文对象
+     * @param dependencies 依赖节点的执行结果访问器，用于安全地获取上游节点的产物。 <--- 修改 Javadoc
+     * @return 包含执行结果 (Payload 和/或 Events) 的 Mono
+     */
+    Mono<NodeResult<C, P, T>> execute(C context, DependencyAccessor<C> dependencies);
 }

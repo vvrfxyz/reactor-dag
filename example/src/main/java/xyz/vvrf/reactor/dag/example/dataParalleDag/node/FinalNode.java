@@ -1,43 +1,28 @@
-// [file name]: finalnode.java
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
 import org.springframework.stereotype.Component;
-// Removed unused Flux import
 import reactor.core.publisher.Mono;
 import xyz.vvrf.reactor.dag.core.DagNode;
-import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
+import xyz.vvrf.reactor.dag.core.DependencyAccessor; // Import Accessor
+// Removed DependencyDescriptor import (not used here)
 import xyz.vvrf.reactor.dag.core.NodeResult;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 
 import java.util.List;
-import java.util.Map;
+// Removed Map import
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
  * reactor-dag
  * The final node, depends on all parallel nodes. Acts as a sync point.
+ * Uses DependencyAccessor.
  *
  * @author Your Name (modified)
  * @date Today's Date (modified)
  */
 @Component
-public class FinalNode implements DagNode<ParalleContext, String, Void> { // Added Void event type
-
-    @Override
-    public String getName() {
-        return "FinalNode";
-    }
-
-    @Override
-    public List<DependencyDescriptor> getDependencies() {
-        // Depends on all three parallel nodes
-        return List.of(
-                new DependencyDescriptor("ParallelNodeA", String.class),
-                new DependencyDescriptor("ParallelNodeB", String.class),
-                new DependencyDescriptor("ParallelNodeC", String.class)
-        );
-    }
+public class FinalNode implements DagNode<ParalleContext, String, Void> {
 
     @Override
     public Class<String> getPayloadType() {
@@ -49,21 +34,32 @@ public class FinalNode implements DagNode<ParalleContext, String, Void> { // Add
         return Void.class;
     }
 
+    // Define the names of the expected dependencies explicitly
+    private static final List<String> EXPECTED_DEPENDENCIES = List.of("ParallelNodeA", "ParallelNodeB", "ParallelNodeC");
+
+    /**
+     * Executes the final node logic, aggregating results from parallel nodes.
+     *
+     * @param context      The parallel context.
+     * @param dependencies Accessor for dependency results. <--- Updated Javadoc
+     * @return A Mono containing the final result.
+     */
     @Override
-    public Mono<NodeResult<ParalleContext, String, Void>> execute(ParalleContext context, Map<String, NodeResult<ParalleContext, ?, ?>> dependencyResults) {
+    public Mono<NodeResult<ParalleContext, String, Void>> execute(ParalleContext context, DependencyAccessor<ParalleContext> dependencies) { // <--- Signature changed
         return Mono.fromCallable(() -> {
             String threadName = Thread.currentThread().getName();
             System.out.println("Executing " + getName() + " on thread: " + threadName);
 
-            // Aggregate results from dependencies correctly
-            String aggregatedPayloads = dependencyResults.entrySet().stream()
-                    .map(entry -> {
-                        String depName = entry.getKey();
-                        NodeResult<ParalleContext, ?, ?> depResult = entry.getValue();
-                        // Safely get payload, provide default if absent or failed
-                        String payloadStr = depResult.getPayload()
-                                .map(Object::toString) // Convert payload to string
-                                .orElseGet(() -> depResult.isFailure() ? "FAILED" : "EMPTY"); // Indicate failure or empty
+            // Aggregate results using the DependencyAccessor
+            String aggregatedPayloads = EXPECTED_DEPENDENCIES.stream()
+                    .map(depName -> {
+                        // Safely get payload using accessor, provide default if absent or failed
+                        String payloadStr = dependencies.getPayload(depName, String.class) // Assuming String payload
+                                .orElseGet(() -> {
+                                    // Check if the dependency actually failed vs just having no payload
+                                    boolean failed = !dependencies.isSuccess(depName);
+                                    return failed ? "FAILED" : "EMPTY";
+                                });
                         return depName + ": [" + payloadStr + "]";
                     })
                     .collect(Collectors.joining("; "));
@@ -82,7 +78,6 @@ public class FinalNode implements DagNode<ParalleContext, String, Void> { // Add
             String resultPayload = getName() + " finished successfully on " + threadName + ". Aggregated: " + aggregatedPayloads;
             System.out.println(getName() + " finished.");
 
-            // Use the correct static factory method
             return NodeResult.success(context, resultPayload, this);
         }).onErrorResume(error -> {
             System.err.println("Error executing " + getName() + ": " + error.getMessage());
