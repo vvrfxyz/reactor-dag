@@ -1,6 +1,7 @@
 package xyz.vvrf.reactor.dag.core;
 
 import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.Collections;
@@ -35,6 +36,18 @@ public interface DagNode<C, P, T> {
      */
     default List<DependencyDescriptor> getDependencies() {
         return Collections.emptyList();
+    }
+
+    /**
+     * 获取此节点的重试策略。
+     * 返回 null 或 Retry.max(0) 表示不重试。
+     *
+     * @return Reactor 的 Retry 规范，或 null/Retry.max(0)
+     * @see reactor.util.retry.Retry
+     * @see reactor.util.retry.RetryBackoffSpec
+     */
+    default Retry getRetrySpec() {
+        return null;
     }
 
     /**

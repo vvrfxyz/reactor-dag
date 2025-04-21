@@ -8,6 +8,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 import xyz.vvrf.reactor.dag.core.*;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.*;
@@ -136,8 +137,6 @@ public class StandardNodeExecutor {
             // 当所有依赖的 NodeResult 就绪后 (流可能仍在进行)，执行当前节点
             return dependenciesMono
                     .flatMap(dependencyResults -> {
-                        // executeNodeInternal 返回 Mono<NodeResult<C, P, T>> (T 是具体的)
-                        // 我们需要返回 Mono<NodeResult<C, P, ?>>
                         Mono<? extends NodeResult<C, P, ?>> resultMono = executeNodeInternal(
                                 node, context, dependencyResults, timeout, requestId, dagName);
                         return resultMono;
@@ -192,7 +191,7 @@ public class StandardNodeExecutor {
             final DagDefinition<C> dagDefinition,
             final String requestId) {
 
-        final String nodeName = node.getClass().getSimpleName();
+        final String nodeName = node.getName();
         final String dagName = dagDefinition.getDagName();
 
         // *** 使用 getEffectiveDependencies 获取依赖列表 ***
@@ -304,8 +303,9 @@ public class StandardNodeExecutor {
             String requestId,
             String dagName) {
 
-        String nodeName = node.getClass().getSimpleName();
+        String nodeName = node.getName();
         Class<P> expectedPayloadType = node.getPayloadType();
+        Retry retrySpec = node.getRetrySpec();
 
         return Mono.defer(() -> {
                     log.info("[RequestId: {}] DAG '{}': 开始执行节点 '{}' (Payload: {}, Impl: {}) 逻辑...",
@@ -322,10 +322,20 @@ public class StandardNodeExecutor {
                 .doOnSuccess(result -> validateAndLogResult(result, expectedPayloadType, nodeName, dagName, requestId))
                 .doOnError(error -> {
                     if (!(error instanceof TimeoutException)) {
-                        log.error(
-                                "[RequestId: {}] DAG '{}': 节点 '{}' 执行期间失败 (非超时): {}",
+                        log.warn(
+                                "[RequestId: {}] DAG '{}': 节点 '{}' 执行尝试失败 (非超时): {}",
                                 requestId, dagName, nodeName, error.getMessage(), error);
+                    } else {
+                        log.warn(
+                                "[RequestId: {}] DAG '{}': 节点 '{}' 执行尝试超时 ({}).",
+                                requestId, dagName, nodeName, timeout);
                     }
+                })
+                .retryWhen(retrySpec != null ? retrySpec : Retry.max(0))
+                .doOnError(error -> {
+                    log.error(
+                            "[RequestId: {}] DAG '{}': 节点 '{}' 执行失败 (重试耗尽或不可重试): {}",
+                            requestId, dagName, nodeName, error.getMessage(), error);
                 })
                 .onErrorResume(error -> handleExecutionError(
                         error,
@@ -393,13 +403,12 @@ public class StandardNodeExecutor {
             String requestId,
             String dagName) {
 
-        String nodeName = node.getClass().getSimpleName();
+        String nodeName = node.getName();
         Throwable capturedError;
         if (error instanceof TimeoutException) {
-            String timeoutMsg = String.format("节点 '%s' 在 DAG '%s' 中执行 Mono<NodeResult> 超时 (超过 %s)", nodeName, dagName, timeout);
+            String timeoutMsg = String.format("节点 '%s' 在 DAG '%s' 中执行 Mono<NodeResult> 超时 (超过 %s, 可能在重试后)", nodeName, dagName, timeout);
             log.error("[RequestId: {}] {}", requestId, timeoutMsg);
             capturedError = new TimeoutException(timeoutMsg);
-            capturedError.initCause(error);
         } else {
             log.error("[RequestId: {}] DAG '{}': 节点 '{}' 执行 Mono<NodeResult> 时发生未捕获异常: {}",
                     requestId, dagName, nodeName, error.getMessage(), error);
