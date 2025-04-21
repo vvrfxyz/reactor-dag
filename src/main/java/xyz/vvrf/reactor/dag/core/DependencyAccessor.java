@@ -51,6 +51,23 @@ public interface DependencyAccessor<C> {
     boolean isSuccess(String dependencyName);
 
     /**
+     * 检查指定的依赖节点是否执行失败。
+     *
+     * @param dependencyName 依赖节点名称
+     * @return 如果节点存在且状态为 FAILURE 则返回 true，否则返回 false
+     */
+    boolean isFailure(String dependencyName);
+
+    /**
+     * 检查指定的依赖节点是否被跳过。
+     *
+     * @param dependencyName 依赖节点名称
+     * @return 如果节点存在且状态为 SKIPPED 则返回 true，否则返回 false
+     */
+    boolean isSkipped(String dependencyName);
+
+
+    /**
      * 检查指定的依赖节点是否存在于结果中。
      *
      * @param dependencyName 依赖节点名称

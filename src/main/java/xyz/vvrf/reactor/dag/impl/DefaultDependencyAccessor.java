@@ -57,6 +57,20 @@ public class DefaultDependencyAccessor<C> implements DependencyAccessor<C> {
     }
 
     @Override
+    public boolean isFailure(String dependencyName) {
+        return getResult(dependencyName)
+                .map(NodeResult::isFailure)
+                .orElse(false);
+    }
+
+    @Override
+    public boolean isSkipped(String dependencyName) {
+        return getResult(dependencyName)
+                .map(NodeResult::isSkipped)
+                .orElse(false);
+    }
+
+    @Override
     public boolean contains(String dependencyName) {
         return results.containsKey(dependencyName);
     }

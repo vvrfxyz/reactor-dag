@@ -51,6 +51,17 @@ public interface DagNode<C, P, T> {
     }
 
     /**
+     * 判断此节点是否应该基于其依赖项的结果来执行。
+     * 如果返回 false，节点执行将被跳过，并可能产生一个表示“跳过”的 NodeResult。
+     *
+     * @param dependencies 依赖节点的执行结果访问器。
+     * @return 如果节点应该执行，则返回 true；否则返回 false。
+     */
+    default boolean shouldExecute(DependencyAccessor<C> dependencies) {
+        return true;
+    }
+
+    /**
      * 获取节点输出的 Payload 类型
      *
      * @return Payload 类型的Class对象

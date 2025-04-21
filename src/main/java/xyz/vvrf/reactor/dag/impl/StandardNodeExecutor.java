@@ -134,12 +134,34 @@ public class StandardNodeExecutor {
             Mono<Map<String, NodeResult<C, ?, ?>>> dependenciesMono = resolveDependencies(
                     node, context, cache, dagDefinition, requestId);
 
-            // 当所有依赖的 NodeResult 就绪后 (流可能仍在进行)，执行当前节点
             return dependenciesMono
                     .flatMap(dependencyResults -> {
-                        Mono<? extends NodeResult<C, P, ?>> resultMono = executeNodeInternal(
-                                node, context, dependencyResults, timeout, requestId, dagName);
-                        return resultMono;
+                        DependencyAccessor<C> accessor = new DefaultDependencyAccessor<>(dependencyResults);
+
+                        boolean shouldExec;
+                        try {
+                            shouldExec = node.shouldExecute(accessor);
+                        } catch (Exception e) {
+                            log.error("[RequestId: {}] DAG '{}': 节点 '{}' 的 shouldExecute 方法抛出异常，将视为不执行并产生错误结果。",
+                                    requestId, dagName, nodeName, e);
+                            return Mono.just(NodeResult.failure(context,
+                                    new IllegalStateException("shouldExecute failed for node " + nodeName, e),
+                                    node));
+                        }
+
+                        if (shouldExec) {
+                            // 条件满足，执行节点 (包含重试逻辑)
+                            log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 条件满足，将执行。", requestId, dagName, nodeName);
+                            // executeNodeInternal 返回 Mono<NodeResult<C, P, T>>
+                            Mono<? extends NodeResult<C, P, ?>> resultMono = executeNodeInternal(
+                                    node, context, dependencyResults, timeout, requestId, dagName);
+                            return resultMono;
+                        } else {
+                            // 条件不满足，跳过执行
+                            log.info("[RequestId: {}] DAG '{}': 节点 '{}' 条件不满足，将被跳过。", requestId, dagName, nodeName);
+                            NodeResult<C, P, ?> skippedResult = NodeResult.skipped(context, node);
+                            return Mono.just(skippedResult);
+                        }
                     });
         });
     }
