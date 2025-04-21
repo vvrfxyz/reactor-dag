@@ -55,6 +55,18 @@
       <version>${reactor-adaptor.version}</version>
     </dependency>
 
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+      <version>1.11.2</version>
+    </dependency>
+    <!-- 如果需要特定的监控系统集成，例如 Prometheus -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+      <version>1.11.2</version>
+    </dependency>
+
     <!-- Caffeine 缓存 -->
     <dependency>
       <groupId>com.github.ben-manes.caffeine</groupId>
