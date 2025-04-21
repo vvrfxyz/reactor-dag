@@ -59,12 +59,14 @@
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-core</artifactId>
       <version>1.11.2</version>
+      <optional>true</optional>
     </dependency>
     <!-- 如果需要特定的监控系统集成，例如 Prometheus -->
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
       <version>1.11.2</version>
+      <optional>true</optional>
     </dependency>
 
     <!-- Caffeine 缓存 -->
@@ -72,6 +74,7 @@
       <groupId>com.github.ben-manes.caffeine</groupId>
       <artifactId>caffeine</artifactId>
       <version>${caffeine.version}</version>
+      <optional>true</optional>
     </dependency>
 
     <!-- Lombok -->
