@@ -122,6 +122,79 @@ public final class NodeResult<C, P, T> {
     }
 
     /**
+     * 创建一个成功的节点结果，只包含 Payload。
+     * 需要显式提供 Payload 和 Event 类型。
+     *
+     * @param context     上下文对象
+     * @param payload     节点产出的 Payload 数据 (可以为 null)
+     * @param payloadType 结果的 Payload 类型 Class 对象
+     * @param eventType   结果的 Event 类型 Class 对象
+     * @return NodeResult 实例
+     */
+    public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Class<P> payloadType, Class<T> eventType) {
+        return new NodeResult<>(context, Optional.ofNullable(payload), Flux.<Event<T>>empty(), null, payloadType, eventType, NodeStatus.SUCCESS);
+    }
+
+    /**
+     * 创建一个成功的节点结果，只包含事件流。
+     * 需要显式提供 Payload 和 Event 类型。
+     *
+     * @param context     上下文对象
+     * @param events      节点产生的事件流 (不能为空)
+     * @param payloadType 结果的 Payload 类型 Class 对象
+     * @param eventType   结果的 Event 类型 Class 对象
+     * @return NodeResult 实例
+     */
+    public static <C, P, T> NodeResult<C, P, T> success(C context, Flux<Event<T>> events, Class<P> payloadType, Class<T> eventType) {
+        Objects.requireNonNull(events, "事件流不能为空");
+        return new NodeResult<>(context, Optional.empty(), events, null, payloadType, eventType, NodeStatus.SUCCESS);
+    }
+
+    /**
+     * 创建一个成功的节点结果，同时包含 Payload 和事件流。
+     * 需要显式提供 Payload 和 Event 类型。
+     *
+     * @param context     上下文对象
+     * @param payload     节点产出的 Payload 数据 (可以为 null)
+     * @param events      节点产生的事件流 (不能为空)
+     * @param payloadType 结果的 Payload 类型 Class 对象
+     * @param eventType   结果的 Event 类型 Class 对象
+     * @return NodeResult 实例
+     */
+    public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Flux<Event<T>> events, Class<P> payloadType, Class<T> eventType) {
+        Objects.requireNonNull(events, "事件流不能为空");
+        return new NodeResult<>(context, Optional.ofNullable(payload), events, null, payloadType, eventType, NodeStatus.SUCCESS);
+    }
+
+    /**
+     * 创建一个失败的节点结果。
+     * 需要显式提供 Payload 和 Event 类型。
+     *
+     * @param context     上下文对象
+     * @param error       执行过程中发生的错误 (不能为空)
+     * @param payloadType 结果的 Payload 类型 Class 对象
+     * @param eventType   结果的 Event 类型 Class 对象
+     * @return NodeResult 实例
+     */
+    public static <C, P, T> NodeResult<C, P, T> failure(C context, Throwable error, Class<P> payloadType, Class<T> eventType) {
+        Objects.requireNonNull(error, "错误对象不能为空");
+        return new NodeResult<>(context, Optional.empty(), Flux.<Event<T>>empty(), error, payloadType, eventType, NodeStatus.FAILURE);
+    }
+
+    /**
+     * 创建一个表示节点被跳过的结果。
+     * 需要显式提供 Payload 和 Event 类型。
+     *
+     * @param context     上下文对象
+     * @param payloadType 结果的 Payload 类型 Class 对象
+     * @param eventType   结果的 Event 类型 Class 对象
+     * @return NodeResult 实例，状态为 SKIPPED
+     */
+    public static <C, P, T> NodeResult<C, P, T> skipped(C context, Class<P> payloadType, Class<T> eventType) {
+        return new NodeResult<>(context, Optional.empty(), Flux.<Event<T>>empty(), null, payloadType, eventType, NodeStatus.SKIPPED);
+    }
+
+    /**
      * 创建一个表示节点被跳过的结果。
      *
      * @param context 上下文对象
