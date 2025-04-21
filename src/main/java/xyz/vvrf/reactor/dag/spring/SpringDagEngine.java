@@ -20,7 +20,6 @@ import java.util.Objects;
  * @author ruifeng.wen (modified)
  */
 @Slf4j
-@Service // 如果这是应用的主要服务，保留 @Service
 public class SpringDagEngine {
 
     private final StandardDagEngine dagEngine; // 底层的标准引擎
@@ -33,7 +32,6 @@ public class SpringDagEngine {
      * @param nodeExecutor 配置好的 StandardNodeExecutor Bean。
      * @param properties   DAG 框架的配置属性。
      */
-    @Autowired // Spring 中构造函数注入的标准做法
     public SpringDagEngine(
             StandardNodeExecutor nodeExecutor,
             DagFrameworkProperties properties // 注入属性对象
@@ -75,6 +73,4 @@ public class SpringDagEngine {
         return EventAdapter.toServerSentEvents(coreEventFlux);
     }
 
-    // 移除了 convertToServerSentEvent 方法，假设使用 EventAdapter.toServerSentEvents。
-    // 如果你更喜欢在这里进行转换逻辑，可以保留它，但使用适配器更清晰。
 }

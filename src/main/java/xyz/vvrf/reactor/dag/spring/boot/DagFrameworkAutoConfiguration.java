@@ -1,16 +1,14 @@
 package xyz.vvrf.reactor.dag.spring.boot;
 
-import org.springframework.beans.factory.ObjectProvider; // 用于可选注入
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-// 移除: import org.springframework.context.annotation.Import;
-// 移除: import xyz.vvrf.reactor.dag.spring.DagFrameworkConfiguration;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 import xyz.vvrf.reactor.dag.impl.StandardNodeExecutor;
-import xyz.vvrf.reactor.dag.spring.SpringDagEngine; // 保留此导入
+import xyz.vvrf.reactor.dag.spring.SpringDagEngine;
 
 /**
  * Reactor DAG框架的Spring Boot自动配置类。
@@ -20,7 +18,7 @@ import xyz.vvrf.reactor.dag.spring.SpringDagEngine; // 保留此导入
  * @author ruifeng.wen (modified)
  */
 @Configuration
-@EnableConfigurationProperties(DagFrameworkProperties.class) // 启用属性绑定
+@EnableConfigurationProperties(DagFrameworkProperties.class)
 public class DagFrameworkAutoConfiguration {
 
     /**
