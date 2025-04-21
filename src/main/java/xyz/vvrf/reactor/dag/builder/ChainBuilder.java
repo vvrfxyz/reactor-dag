@@ -154,21 +154,4 @@ public class ChainBuilder<C> {
         return nodeClass.getSimpleName();
     }
 
-    private Class<? extends DagNode<C, ?, ?>> lastNodeAddedLinearly = null;
-
-    public ChainBuilder<C> startLinear(Class<? extends DagNode<C, ?, ?>> nodeClass) {
-        node(nodeClass); // 添加为无依赖节点
-        lastNodeAddedLinearly = nodeClass;
-        return this;
-    }
-
-    public ChainBuilder<C> then(Class<? extends DagNode<C, ?, ?>> nodeClass) {
-        if (lastNodeAddedLinearly == null) {
-            throw new IllegalStateException("Cannot use .then() without a preceding node in the linear chain setup (use startLinear first).");
-        }
-        node(nodeClass, lastNodeAddedLinearly); // 依赖上一个节点
-        lastNodeAddedLinearly = nodeClass; // 更新最后一个节点
-        return this;
-    }
-
 }
