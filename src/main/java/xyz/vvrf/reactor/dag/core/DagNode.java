@@ -18,6 +18,17 @@ import java.util.Map;
 public interface DagNode<C, P, T> {
 
     /**
+     * 获取节点的唯一名称。
+     * 此名称在 DAG 定义中必须是唯一的。
+     * 默认实现返回类的简单名称，但强烈建议实现类覆盖此方法以提供稳定且有意义的名称。
+     *
+     * @return 节点的唯一名称
+     */
+    default String getName() {
+        return this.getClass().getSimpleName();
+    }
+
+    /**
      * 获取节点依赖列表
      *
      * @return 依赖描述符列表

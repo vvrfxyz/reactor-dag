@@ -52,7 +52,6 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         } else {
             try {
                 registerNodes(nodes);
-                // 不在此处调用 initialize()，允许子类在构造函数中设置显式依赖后再初始化
             } catch (IllegalStateException e) {
                 log.error("[{}] DAG '{}' 节点注册失败: {}", contextType.getSimpleName(), getDagName(), e.getMessage());
                 nodesByName.clear();
@@ -169,12 +168,10 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         }
     }
 
-    // --- 修改以下方法以使用 getEffectiveDependencies ---
-
     private void validateDependencies() {
         log.debug("[{}] DAG '{}': 验证依赖关系 (使用有效依赖)...", contextType.getSimpleName(), getDagName());
         for (DagNode<C, ?, ?> node : getAllNodes()) {
-            String nodeName = node.getClass().getSimpleName();
+            String nodeName = node.getName();
             // *** 使用 getEffectiveDependencies ***
             List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
             if (dependencies.isEmpty()) continue;
@@ -257,7 +254,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
         // 构建图和计算入度
         for (DagNode<C, ?, ?> node : nodesByName.values()) {
-            String dependerName = node.getClass().getSimpleName(); // 当前节点
+            String dependerName = node.getName();
             // *** 使用 getEffectiveDependencies ***
             List<DependencyDescriptor> dependencies = getEffectiveDependencies(dependerName);
 
@@ -334,7 +331,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         }
 
         for (DagNode<C, ?, ?> node : getAllNodes()) {
-            String nodeName = node.getClass().getSimpleName();
+            String nodeName = node.getName();
             // *** 使用 getEffectiveDependencies ***
             List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
             if (!dependencies.isEmpty()) {
@@ -419,7 +416,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
         // 添加边 (基于有效依赖)
         for (DagNode<C, ?, ?> node : getAllNodes()) {
-            String nodeName = node.getClass().getSimpleName();
+            String nodeName = node.getName();
             // *** 使用 getEffectiveDependencies ***
             List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
             if (!dependencies.isEmpty()) {
@@ -437,12 +434,11 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         log.info("[{}] DAG '{}' DOT格式图 (可使用 Graphviz 查看):\n{}", contextType.getSimpleName(), getDagName(), dotGraph.toString());
     }
 
-    // --- registerNodes, formatNodeSet, getNode, getNodeAnyType, getAllNodes, getSupportedOutputTypes, supportsOutputType, isInitialized 保持不变 ---
     // registerNodes 逻辑不变，它只负责注册节点实例
     private void registerNodes(List<DagNode<C, ?, ?>> nodes) throws IllegalStateException {
         log.debug("[{}] DAG '{}': 开始注册 {} 个提供的节点...", contextType.getSimpleName(), getDagName(), nodes.size());
         for (DagNode<C, ?, ?> node : nodes) {
-            String nodeName = node.getClass().getSimpleName();
+            String nodeName = node.getName();
             Class<?> payloadType = node.getPayloadType();
 
             if (nodeName == null || nodeName.trim().isEmpty()) {
@@ -460,9 +456,11 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             if (nodesByName.containsKey(nodeName)) {
                 DagNode<C, ?, ?> existingNode = nodesByName.get(nodeName);
                 String errorMsg = String.format(
-                        "[%s] DAG '%s': 节点名称冲突！名称 '%s' 已被节点 '%s' 使用，不能再被节点 '%s' 使用。节点名称在 DAG 中必须唯一。",
+                        "[%s] DAG '%s': 节点名称冲突！名称 '%s' 已被节点 '%s' (类: %s) 使用，不能再被节点 '%s' (类: %s) 使用。节点名称在 DAG 中必须唯一。",
                         contextType.getSimpleName(), getDagName(), nodeName,
+                        existingNode.getName(),
                         existingNode.getClass().getName(),
+                        node.getName(),
                         node.getClass().getName()
                 );
                 log.error(errorMsg);
@@ -502,26 +500,21 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
     }
 
     private String formatDependencyError(DagNode<C, ?, ?> node, DependencyDescriptor dep) {
+        String nodeName = node.getName();
         String depName = dep.getName();
         Class<?> requiredPayloadType = dep.getRequiredType();
-        // 因为名称唯一，直接从 nodesByName 获取依赖节点实例
         DagNode<C, ?, ?> depNode = nodesByName.get(depName);
-        // 之前的检查保证了 depNode 不为 null
-        // 检查该唯一实例的 Payload 类型是否匹配
         if (depNode.getPayloadType().equals(requiredPayloadType) || requiredPayloadType.isAssignableFrom(depNode.getPayloadType())) {
-            // 类型匹配或兼容，理论上不应进入此 format 方法，但作为防御
             return String.format("内部错误：节点 '%s' 依赖 '%s' 类型 '%s'，但验证逻辑出错。",
-                    node.getClass().getSimpleName(), depName, requiredPayloadType.getSimpleName());
+                    nodeName, depName, requiredPayloadType.getSimpleName());
         } else {
-            // 依赖节点存在，但其唯一的 Payload 类型不匹配
             return String.format(
                     "节点 '%s' (%s) 依赖节点 '%s' 输出 Payload 类型 '%s'，但节点 '%s' (%s) 实际输出 Payload 类型 '%s'",
-                    node.getClass().getSimpleName(), node.getClass().getSimpleName(),
+                    nodeName, node.getClass().getSimpleName(),
                     depName, requiredPayloadType.getSimpleName(),
                     depName, depNode.getClass().getSimpleName(), depNode.getPayloadType().getSimpleName()
             );
         }
-        // 注意：不再需要 getSupportedOutputTypes，因为每个名称只有一个节点和一个 Payload 类型
     }
 
     @Override

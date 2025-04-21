@@ -35,11 +35,11 @@ public class DataParalleDag extends AbstractDagDefinition<ParalleContext> {
 
         Map<String, List<DependencyDescriptor>> explicitDependencies = builder
                 // 定义起点节点 (无依赖)
-                .node(FirstNode.class)
-                .node(ParallelNodeA.class,FirstNode.class)
-                .node(ParallelNodeB.class,FirstNode.class)
-                .node(ParallelNodeC.class,FirstNode.class)
-                .node(FinalNode.class,ParallelNodeA.class,ParallelNodeB.class,ParallelNodeC.class)
+                .node(FirstNode.class.getSimpleName())
+                .node(ParallelNodeA.class.getSimpleName(),FirstNode.class.getSimpleName())
+                .node(ParallelNodeB.class.getSimpleName(),FirstNode.class.getSimpleName())
+                .node(ParallelNodeC.class.getSimpleName(),FirstNode.class.getSimpleName())
+                .node(FinalNode.class.getSimpleName(),ParallelNodeA.class.getSimpleName(),ParallelNodeB.class.getSimpleName(),ParallelNodeC.class.getSimpleName())
                 .build();
         explicitDependencies.forEach(this::addExplicitDependencies);
         initializeIfNeeded();
