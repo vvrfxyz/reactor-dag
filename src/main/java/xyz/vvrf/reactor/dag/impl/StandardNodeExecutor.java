@@ -140,7 +140,7 @@ public class StandardNodeExecutor {
 
                         boolean shouldExec;
                         try {
-                            shouldExec = node.shouldExecute(accessor);
+                            shouldExec = node.shouldExecute(context, accessor);
                         } catch (Exception e) {
                             log.error("[RequestId: {}] DAG '{}': 节点 '{}' 的 shouldExecute 方法抛出异常，将视为不执行并产生错误结果。",
                                     requestId, dagName, nodeName, e);
