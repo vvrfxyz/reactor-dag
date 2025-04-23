@@ -6,8 +6,8 @@ import xyz.vvrf.reactor.dag.core.*;
 
 import java.time.Duration;
 import java.util.*;
-import java.util.function.BiFunction;
-import java.util.function.Function;
+import java.util.function.BiFunction; // 引入 BiFunction
+// import java.util.function.Function; // 不再需要 Function
 
 /**
  * 用于测试目的的可配置 DagNode 实现。
@@ -23,7 +23,7 @@ public class TestDagNode<C, P, T> implements DagNode<C, P, T> {
     private final Class<P> payloadType;
     private final Class<T> eventType;
     private final List<DependencyDescriptor> dependencies;
-    private final Function<DependencyAccessor<C>, Boolean> shouldExecuteLogic;
+    private final BiFunction<C, DependencyAccessor<C>, Boolean> shouldExecuteLogic;
     private final BiFunction<C, DependencyAccessor<C>, Mono<NodeResult<C, P, T>>> executionLogic;
     private final Retry retrySpec;
     private final Duration executionTimeout;
@@ -55,8 +55,8 @@ public class TestDagNode<C, P, T> implements DagNode<C, P, T> {
     }
 
     @Override
-    public boolean shouldExecute(DependencyAccessor<C> dependencies) {
-        return shouldExecuteLogic.apply(dependencies);
+    public boolean shouldExecute(C context, DependencyAccessor<C> dependencies) {
+        return shouldExecuteLogic.apply(context, dependencies);
     }
 
     @Override
@@ -79,7 +79,8 @@ public class TestDagNode<C, P, T> implements DagNode<C, P, T> {
         try {
             // 默认行为：如果未提供执行逻辑，则返回一个成功的、空的 NodeResult
             if (executionLogic == null) {
-                return Mono.just(NodeResult.success(context, (P) null, this)); // 注意 payload 为 null
+                // 使用 NodeResult 的工厂方法，需要传入 this (DagNode 实例)
+                return Mono.just(NodeResult.success(context, (P) null, this));
             }
             // 执行提供的逻辑
             return executionLogic.apply(context, dependencies);
@@ -98,10 +99,10 @@ public class TestDagNode<C, P, T> implements DagNode<C, P, T> {
         private final Class<P> payloadType;
         private final Class<T> eventType;
         private List<DependencyDescriptor> dependencies = new ArrayList<>();
-        private Function<DependencyAccessor<C>, Boolean> shouldExecuteLogic = deps -> true; // 默认执行
-        private BiFunction<C, DependencyAccessor<C>, Mono<NodeResult<C, P, T>>> executionLogic = null; // 默认不执行特定逻辑
-        private Retry retrySpec = null; // 默认不重试
-        private Duration executionTimeout = null; // 默认无特定超时
+        private BiFunction<C, DependencyAccessor<C>, Boolean> shouldExecuteLogic = (ctx, deps) -> true;
+        private BiFunction<C, DependencyAccessor<C>, Mono<NodeResult<C, P, T>>> executionLogic = null;
+        private Retry retrySpec = null;
+        private Duration executionTimeout = null;
 
         Builder(String name, Class<P> payloadType, Class<T> eventType) {
             this.name = name;
@@ -119,7 +120,11 @@ public class TestDagNode<C, P, T> implements DagNode<C, P, T> {
             return this;
         }
 
-        public Builder<C, P, T> shouldExecute(Function<DependencyAccessor<C>, Boolean> shouldExecuteLogic) {
+        /**
+         * 设置节点的条件执行逻辑。
+         * @param shouldExecuteLogic 一个函数，接收上下文和依赖访问器，返回 true 表示应执行，false 表示应跳过。
+         */
+        public Builder<C, P, T> shouldExecute(BiFunction<C, DependencyAccessor<C>, Boolean> shouldExecuteLogic) {
             this.shouldExecuteLogic = Objects.requireNonNull(shouldExecuteLogic);
             return this;
         }
@@ -163,22 +168,8 @@ public class TestDagNode<C, P, T> implements DagNode<C, P, T> {
         }
 
         public TestDagNode<C, P, T> build() {
-            // 在构建时创建临时的 NodeResult 工厂方法所需的 "node-like" 结构，如果 executionLogic 未设置
             if (this.executionLogic == null) {
-                // 创建一个临时的、仅用于类型推断的 DagNode 引用
-                DagNode<C, P, T> selfRefForType = new DagNode<C, P, T>() {
-                    @Override public String getName() { return name; }
-                    @Override public Class<P> getPayloadType() { return payloadType; }
-                    @Override public Class<T> getEventType() { return eventType; }
-                    @Override public Mono<NodeResult<C, P, T>> execute(C context, DependencyAccessor<C> dependencies) { return null; /* 不会被调用 */ }
-                };
-                this.executionLogic = (ctx, deps) -> Mono.just(NodeResult.success(ctx, (P) null, selfRefForType));
-            } else if (this.executionLogic.toString().contains("returnsPayload") || this.executionLogic.toString().contains("failsWith")) {
-                // 如果使用的是 returnsPayload 或 failsWith 快捷方式，它们内部已经使用了新的工厂方法，不需要 selfRef
-                // (这是一个简化的检查，实际可能需要更健壮的方式)
-            } else {
-                // 对于用户自定义的 executionLogic，我们假设它能正确处理 NodeResult 的创建
-                // 或者用户可以使用新的 NodeResult 工厂方法
+                this.executionLogic = (ctx, deps) -> Mono.just(NodeResult.success(ctx, (P) null, payloadType, eventType));
             }
             return new TestDagNode<>(this);
         }
