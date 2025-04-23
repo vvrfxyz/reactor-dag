@@ -1,6 +1,8 @@
 package xyz.vvrf.reactor.dag.core;
 
 import reactor.core.publisher.Flux;
+
+import java.util.NoSuchElementException;
 import java.util.Optional;
 
 /**
@@ -75,8 +77,18 @@ public interface DependencyAccessor<C> {
      */
     boolean contains(String dependencyName);
 
-    // 可以根据需要添加更多便捷方法，例如：
-    // Optional<Throwable> getError(String dependencyName);
-    // <DepP> DepP getPayloadOrThrow(String dependencyName, Class<DepP> expectedType);
-    // <DepP> DepP getPayloadOrDefault(String dependencyName, Class<DepP> expectedType, DepP defaultValue);
+    default Optional<Throwable> getError(String dependencyName) {
+        return getResult(dependencyName).flatMap(NodeResult::getError);
+    }
+
+    default <DepP> DepP getPayloadOrThrow(String dependencyName, Class<DepP> expectedType) {
+        return getPayload(dependencyName, expectedType)
+                .orElseThrow(() -> new NoSuchElementException(
+                        String.format("No payload of type %s found for successful dependency '%s'",
+                                expectedType.getSimpleName(), dependencyName)));
+    }
+
+    default <DepP> DepP getPayloadOrDefault(String dependencyName, Class<DepP> expectedType, DepP defaultValue) {
+        return getPayload(dependencyName, expectedType).orElse(defaultValue);
+    }
 }

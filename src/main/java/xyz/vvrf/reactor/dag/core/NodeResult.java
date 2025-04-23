@@ -76,6 +76,19 @@ public final class NodeResult<C, P, T> {
     }
 
     /**
+     * 创建一个成功的节点结果。
+     * 类型通过 DagNode 推断。
+     *
+     * @param context 上下文对象
+     * @param node    产生此结果的 DagNode 实例
+     * @return NodeResult 实例
+     */
+    public static <C, P, T> NodeResult<C, P, T> success(C context, DagNode<C, P, T> node) {
+        Objects.requireNonNull(node, "DagNode 实例不能为空");
+        return new NodeResult<>(context, Optional.empty(), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
+    }
+
+    /**
      * 创建一个成功的节点结果，只包含事件流。
      * 类型通过 DagNode 推断。
      *

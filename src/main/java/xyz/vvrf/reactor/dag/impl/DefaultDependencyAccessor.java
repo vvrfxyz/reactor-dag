@@ -75,19 +75,4 @@ public class DefaultDependencyAccessor<C> implements DependencyAccessor<C> {
         return results.containsKey(dependencyName);
     }
 
-
-    public Optional<Throwable> getError(String dependencyName) {
-        return getResult(dependencyName).flatMap(NodeResult::getError);
-    }
-
-    public <DepP> DepP getPayloadOrThrow(String dependencyName, Class<DepP> expectedType) {
-        return getPayload(dependencyName, expectedType)
-                .orElseThrow(() -> new NoSuchElementException(
-                        String.format("No payload of type %s found for successful dependency '%s'",
-                                expectedType.getSimpleName(), dependencyName)));
-    }
-
-    public <DepP> DepP getPayloadOrDefault(String dependencyName, Class<DepP> expectedType, DepP defaultValue) {
-        return getPayload(dependencyName, expectedType).orElse(defaultValue);
-    }
 }
