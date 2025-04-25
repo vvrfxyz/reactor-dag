@@ -8,7 +8,11 @@ import org.springframework.context.annotation.Configuration;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 import xyz.vvrf.reactor.dag.impl.StandardNodeExecutor;
+import xyz.vvrf.reactor.dag.monitor.DagMonitorListener;
 import xyz.vvrf.reactor.dag.spring.SpringDagEngine;
+
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Reactor DAG框架的Spring Boot自动配置类。
@@ -25,22 +29,29 @@ public class DagFrameworkAutoConfiguration {
      * 如果上下文中不存在 StandardNodeExecutor Bean，则提供一个默认的实例。
      * 使用 DagFrameworkProperties 进行配置。
      * 允许用户自定义用于节点执行的 Scheduler Bean。
+     * 注入所有可用的 DagMonitorListener beans。
      *
-     * @param properties 绑定的配置属性。
-     * @param nodeExecutionSchedulerProvider 用户可选提供的 Scheduler Bean。
-     *                               如果不存在，则默认为 Schedulers.boundedElastic()。
+     * @param properties                  配置属性。
+     * @param nodeExecutionSchedulerProvider 可选的自定义 Scheduler 提供者。
+     * @param monitorListenersProvider    可选的 DagMonitorListener bean 列表提供者。
+     * Spring 会自动收集此类型的所有 bean。
      * @return StandardNodeExecutor 实例。
      */
     @Bean
     @ConditionalOnMissingBean
     public StandardNodeExecutor standardNodeExecutor(
             DagFrameworkProperties properties,
-            ObjectProvider<Scheduler> nodeExecutionSchedulerProvider
+            ObjectProvider<Scheduler> nodeExecutionSchedulerProvider,
+            ObjectProvider<List<DagMonitorListener>> monitorListenersProvider
     ) {
         Scheduler scheduler = nodeExecutionSchedulerProvider.getIfAvailable(Schedulers::boundedElastic);
+        // 获取监听器列表，如果未定义则返回空列表
+        List<DagMonitorListener> listeners = monitorListenersProvider.getIfAvailable(Collections::emptyList);
+
         return new StandardNodeExecutor(
                 properties.getNode().getDefaultTimeout(),
-                scheduler
+                scheduler,
+                listeners
         );
     }
 
