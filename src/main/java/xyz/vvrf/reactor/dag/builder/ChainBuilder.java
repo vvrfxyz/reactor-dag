@@ -20,7 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class ChainBuilder<C> {
 
-    private final AbstractDagDefinition<C> dagDefinition; // 需要引用来查找节点信息和添加显式依赖
+    private final AbstractDagDefinition<C> dagDefinition;
     private final Map<String, List<DependencyDescriptor>> explicitDependenciesMap;
 
     /**
@@ -116,6 +116,37 @@ public class ChainBuilder<C> {
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
                 finalDependencies.size());
         return finalDependencies;
+    }
+
+    /**
+     * 将通过此 Builder 定义的所有显式依赖应用到关联的 DagDefinition 实例。
+     * 这是调用 {@link #build()} 并手动迭代调用 {@link AbstractDagDefinition#addExplicitDependencies(String, List)} 的便捷方法。
+     * 调用此方法后，通常应接着调用 {@link AbstractDagDefinition#initialize()}。
+     *
+     * @throws IllegalStateException 如果在应用依赖时发生错误（例如节点不存在）。
+     */
+    public void applyToDefinition() {
+        log.info("[{}] DAG '{}': 开始将 ChainBuilder 定义的显式依赖应用到 DagDefinition...",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
+        Map<String, List<DependencyDescriptor>> builtDependencies = this.build();
+
+        int appliedCount = 0;
+        for (Map.Entry<String, List<DependencyDescriptor>> entry : builtDependencies.entrySet()) {
+            try {
+                // 调用 DagDefinition 的方法来添加依赖
+                dagDefinition.addExplicitDependencies(entry.getKey(), entry.getValue());
+                appliedCount++;
+            } catch (IllegalArgumentException e) {
+                // addExplicitDependencies 会在节点不存在时抛出异常
+                log.error("[{}] DAG '{}': 应用节点 '{}' 的显式依赖时失败: {}",
+                        dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
+                        entry.getKey(), e.getMessage());
+                // 重新抛出，指示应用过程失败
+                throw new IllegalStateException("Failed to apply dependency for node '" + entry.getKey() + "'", e);
+            }
+        }
+        log.info("[{}] DAG '{}': 成功应用了 {} 个节点的显式依赖配置到 DagDefinition。",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), appliedCount);
     }
 
     /**

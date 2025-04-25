@@ -8,6 +8,7 @@ import java.util.Set;
 /**
  * 定义一个特定上下文类型 C 的 DAG 结构。
  * 实现者负责管理节点、计算执行顺序和进行验证。
+ * 依赖关系必须通过外部机制
  *
  * @param <C> 上下文类型
  * @author ruifeng.wen
@@ -24,12 +25,12 @@ public interface DagDefinition<C> {
     }
 
     /**
-     * 获取节点的有效依赖关系。
-     * 实现应优先考虑外部（如 Builder）设置的显式依赖，
-     * 如果没有显式依赖，则回退到节点自身的 getDependencies() 定义。
+     * 获取节点的显式依赖关系。
+     * 实现应返回通过外部机制（如 Builder）设置的显式依赖。
+     * 如果节点没有被配置显式依赖，则认为它没有依赖。
      *
      * @param nodeName 节点名称
-     * @return 该节点的有效依赖描述符列表，如果节点不存在或无依赖则为空列表。
+     * @return 该节点的显式依赖描述符列表，如果节点不存在或未配置依赖则为空列表。
      */
     List<DependencyDescriptor> getEffectiveDependencies(String nodeName);
 
@@ -94,12 +95,16 @@ public interface DagDefinition<C> {
 
     /**
      * 初始化 DAG 定义。
-     * 实现者应在此方法中完成节点注册、验证（依赖、循环）和执行顺序计算。
-     * 通常在构造函数或 @PostConstruct 中调用。
+     * 实现者应在此方法中完成节点注册、验证（基于显式依赖、循环）和执行顺序计算。
+     * 必须在所有显式依赖通过 addExplicitDependencies 设置完成后调用。
      *
      * @throws IllegalStateException 如果验证失败。
      */
     void initialize() throws IllegalStateException;
 
+    /**
+     * 检查 DAG 定义是否已初始化。
+     * @return 如果已初始化则返回 true
+     */
     boolean isInitialized();
 }

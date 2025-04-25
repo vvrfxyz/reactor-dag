@@ -47,7 +47,6 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         if (nodes == null || nodes.isEmpty()) {
             log.warn("[{}] 未找到任何 DagNode<C, ?, ?> 类型的节点，DAG '{}' 将不可用", contextType.getSimpleName(), getDagName());
             this.executionOrder = Collections.emptyList();
-            // 注意：这里不应标记为 initialized=true，因为子类可能稍后添加显式依赖并调用 initialize
             this.initialized = false;
         } else {
             try {
@@ -97,35 +96,33 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         }
         log.info("[{}] DAG '{}': 为节点 '{}' 设置 {} 条显式依赖 (将覆盖节点自身定义): {}",
                 contextType.getSimpleName(), getDagName(), nodeName, dependencies.size(), dependencies);
-        this.explicitDependencies.put(nodeName, new ArrayList<>(dependencies)); // 存储副本
+        this.explicitDependencies.put(nodeName, new ArrayList<>(dependencies));
     }
 
     /**
-     * 获取节点的有效依赖关系。
-     * 优先使用通过 addExplicitDependencies 设置的显式依赖。
-     * 如果没有显式依赖，则回退到节点自身的 getDependencies() 定义。
+     * 获取节点的显式依赖关系。
+     * 返回通过 {@link #addExplicitDependencies(String, List)} 设置的依赖。
+     * 如果节点存在但没有为其设置显式依赖，则返回空列表。
      *
      * @param nodeName 节点名称
-     * @return 该节点的有效依赖描述符列表，如果节点不存在则返回空列表。
+     * @return 该节点的显式依赖描述符列表，如果节点不存在或未配置依赖则为空列表。
      */
     @Override
     public List<DependencyDescriptor> getEffectiveDependencies(String nodeName) {
-        // 1. 检查显式依赖
+        // 只从 explicitDependencies 获取
         List<DependencyDescriptor> explicitDeps = explicitDependencies.get(nodeName);
         if (explicitDeps != null) {
-            // 找到了显式依赖（可能是空列表），直接返回它
+            // 找到了显式依赖（可能是空列表），返回不可变副本
             return Collections.unmodifiableList(explicitDeps);
-        }
-
-        // 2. 没有显式依赖，回退到节点自身定义
-        DagNode<C, ?, ?> node = nodesByName.get(nodeName);
-        if (node != null) {
-            List<DependencyDescriptor> nodeDeps = node.getDependencies();
-            // 返回不可变列表，如果节点返回 null 则返回空列表
-            return (nodeDeps != null) ? Collections.unmodifiableList(nodeDeps) : Collections.emptyList();
         } else {
-            // 节点不存在
-            log.warn("[{}] DAG '{}': 在获取有效依赖时未找到节点 '{}'", contextType.getSimpleName(), getDagName(), nodeName);
+            // 节点可能存在，但没有为其配置显式依赖，或者节点根本不存在
+            if (nodesByName.containsKey(nodeName)) {
+                // 节点存在但无显式依赖配置
+                log.trace("[{}] DAG '{}': 节点 '{}' 存在但未配置显式依赖，视为无依赖。", contextType.getSimpleName(), getDagName(), nodeName);
+            } else {
+                // 节点不存在
+                log.warn("[{}] DAG '{}': 在获取有效依赖时未找到节点 '{}'", contextType.getSimpleName(), getDagName(), nodeName);
+            }
             return Collections.emptyList();
         }
     }
@@ -141,92 +138,96 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         if (nodesByName.isEmpty() && !explicitDependencies.isEmpty()) {
             log.warn("[{}] DAG '{}' 没有注册节点，但存在显式依赖定义，这通常是无效的。继续初始化为空DAG。", contextType.getSimpleName(), getDagName());
         }
-        if (nodesByName.isEmpty() && explicitDependencies.isEmpty()) {
-            log.warn("[{}] DAG '{}' 为空 (无节点和显式依赖)，跳过验证和排序", contextType.getSimpleName(), getDagName());
+        if (nodesByName.isEmpty()) {
+            log.warn("[{}] DAG '{}' 为空 (无节点)，跳过验证和排序", contextType.getSimpleName(), getDagName());
             this.executionOrder = Collections.emptyList();
-            this.initialized = true; // 标记为空但已初始化
+            this.initialized = true;
             return;
         }
 
 
-        log.info("[{}] 开始初始化和验证 DAG '{}' (使用有效依赖)...", contextType.getSimpleName(), getDagName());
+        log.info("[{}] 开始初始化和验证 DAG '{}' (仅使用显式定义的依赖)...", contextType.getSimpleName(), getDagName());
         try {
-            validateDependencies(); // 使用 getEffectiveDependencies
-            detectCycles();         // 使用 getEffectiveDependencies
-            this.executionOrder = calculateExecutionOrder(); // 使用 getEffectiveDependencies
+            validateDependencies();
+            detectCycles();
+            this.executionOrder = calculateExecutionOrder();
             this.initialized = true;
 
             log.info("[{}] DAG '{}' 验证成功", contextType.getSimpleName(), getDagName());
             log.info("[{}] DAG '{}' 执行顺序: {}", contextType.getSimpleName(), getDagName(), executionOrder);
-            printDagStructure();    // 使用 getEffectiveDependencies
-            generateDotGraph();     // 使用 getEffectiveDependencies
+            printDagStructure();
+            generateDotGraph();
         } catch (IllegalStateException e) {
             log.error("[{}] DAG '{}' 验证失败: {}", contextType.getSimpleName(), getDagName(), e.getMessage());
             this.executionOrder = Collections.emptyList();
-            this.initialized = false; // 保持未初始化状态
-            throw e; // 将验证异常抛出
+            this.initialized = false;
+            throw e;
         }
     }
 
     private void validateDependencies() {
-        log.debug("[{}] DAG '{}': 验证依赖关系 (使用有效依赖)...", contextType.getSimpleName(), getDagName());
-        for (DagNode<C, ?, ?> node : getAllNodes()) {
-            String nodeName = node.getName();
-            // *** 使用 getEffectiveDependencies ***
-            List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
+        log.debug("[{}] DAG '{}': 验证显式定义的依赖关系...", contextType.getSimpleName(), getDagName());
+        // 遍历所有设置了显式依赖的节点
+        for (Map.Entry<String, List<DependencyDescriptor>> entry : explicitDependencies.entrySet()) {
+            String nodeName = entry.getKey();
+            List<DependencyDescriptor> dependencies = entry.getValue();
+
+            if (!nodesByName.containsKey(nodeName)) {
+                String errorMsg = String.format("配置依赖的节点 '%s' 在验证时已不存在", nodeName);
+                throw new IllegalStateException(String.format("[%s] DAG '%s': %s", contextType.getSimpleName(), getDagName(), errorMsg));
+            }
+            DagNode<C, ?, ?> node = nodesByName.get(nodeName);
+
             if (dependencies.isEmpty()) continue;
 
             for (DependencyDescriptor dep : dependencies) {
                 // 检查依赖的节点是否存在 (基于名称)
                 if (!nodesByName.containsKey(dep.getName())) {
-                    String errorMsg = String.format("节点 '%s' (%s) 依赖不存在的节点 '%s'",
+                    String errorMsg = String.format("节点 '%s' (%s) 显式依赖了不存在的节点 '%s'",
                             nodeName, node.getClass().getSimpleName(), dep.getName());
                     throw new IllegalStateException(String.format("[%s] DAG '%s': %s", contextType.getSimpleName(), getDagName(), errorMsg));
                 }
                 // 检查依赖的节点是否支持所需的 Payload 类型
                 if (!supportsOutputType(dep.getName(), dep.getRequiredType())) {
-                    // formatDependencyError 内部也需要基于 nodesByName 获取依赖节点信息，保持不变
                     String errorMsg = formatDependencyError(node, dep);
                     throw new IllegalStateException(String.format("[%s] DAG '%s': %s", contextType.getSimpleName(), getDagName(), errorMsg));
                 }
             }
         }
-        log.info("[{}] DAG '{}': 依赖关系验证通过", contextType.getSimpleName(), getDagName());
+        log.info("[{}] DAG '{}': 显式依赖关系验证通过", contextType.getSimpleName(), getDagName());
     }
 
     private void detectCycles() {
-        log.debug("[{}] DAG '{}': 检测循环依赖 (使用有效依赖)...", contextType.getSimpleName(), getDagName());
+        log.debug("[{}] DAG '{}': 检测基于显式依赖的循环...", contextType.getSimpleName(), getDagName());
         Set<String> visited = new HashSet<>();
         Set<String> visiting = new HashSet<>();
+        // 只需检查图中实际存在的节点
         for (String nodeName : nodesByName.keySet()) {
             if (!visited.contains(nodeName)) {
-                checkCycleDFS(nodeName, visiting, visited); // checkCycleDFS 内部会获取依赖
+                checkCycleDFS(nodeName, visiting, visited);
             }
         }
-        log.info("[{}] DAG '{}': 未检测到循环依赖", contextType.getSimpleName(), getDagName());
+        log.info("[{}] DAG '{}': 未检测到基于显式依赖的循环", contextType.getSimpleName(), getDagName());
     }
 
     private void checkCycleDFS(String nodeName, Set<String> visiting, Set<String> visited) {
         visiting.add(nodeName);
 
-        // *** 使用 getEffectiveDependencies ***
         List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
 
         if (!dependencies.isEmpty()) {
             for (DependencyDescriptor dep : dependencies) {
                 String depName = dep.getName();
 
-                // 验证阶段已检查依赖是否存在，这里再次确认
+                // 验证阶段已检查依赖是否存在，这里再次确认以防万一
                 if (!nodesByName.containsKey(depName)) {
-                    // 这个错误理论上不应发生，因为 validateDependencies 先运行
-                    throw new IllegalStateException(String.format("[%s] DAG '%s': 节点 '%s' 依赖不存在的节点 '%s' (在循环检测中发现)",
+                    throw new IllegalStateException(String.format("[%s] DAG '%s': 节点 '%s' 显式依赖了不存在的节点 '%s' (在循环检测中发现)",
                             contextType.getSimpleName(), getDagName(), nodeName, depName));
                 }
 
                 if (visiting.contains(depName)) {
-                    // 构建更详细的循环路径可能需要回溯，这里简单报告涉及的边
                     throw new IllegalStateException(
-                            String.format("[%s] DAG '%s': 检测到循环依赖！路径涉及 '%s' -> '%s' (可能更长)",
+                            String.format("[%s] DAG '%s': 检测到基于显式依赖的循环！路径涉及 '%s' -> '%s' (可能更长)",
                                     contextType.getSimpleName(), getDagName(), depName, nodeName));
                 }
 
@@ -240,36 +241,31 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         visited.add(nodeName);
     }
 
-
     private List<String> calculateExecutionOrder() {
-        log.debug("[{}] DAG '{}': 计算拓扑执行顺序 (使用有效依赖)...", contextType.getSimpleName(), getDagName());
+        log.debug("[{}] DAG '{}': 计算基于显式依赖的拓扑执行顺序...", contextType.getSimpleName(), getDagName());
         Map<String, Integer> inDegree = new HashMap<>();
-        Map<String, List<String>> adj = new HashMap<>(); // 存储依赖关系： key -> list of nodes that depend on key
+        Map<String, List<String>> adj = new HashMap<>();
 
-        // 初始化入度和邻接表
+        // 初始化所有注册节点的入度和邻接表
         for (String nodeName : nodesByName.keySet()) {
             inDegree.put(nodeName, 0);
             adj.put(nodeName, new ArrayList<>());
         }
 
-        // 构建图和计算入度
-        for (DagNode<C, ?, ?> node : nodesByName.values()) {
-            String dependerName = node.getName();
-            // *** 使用 getEffectiveDependencies ***
-            List<DependencyDescriptor> dependencies = getEffectiveDependencies(dependerName);
+        // 构建图和计算入度 (仅基于显式依赖)
+        // 遍历所有设置了显式依赖的节点
+        for (Map.Entry<String, List<DependencyDescriptor>> entry : explicitDependencies.entrySet()) {
+            String dependerName = entry.getKey();
+            List<DependencyDescriptor> dependencies = entry.getValue();
 
             if (!dependencies.isEmpty()) {
                 for (DependencyDescriptor dep : dependencies) {
-                    String dependencyName = dep.getName(); // 当前节点依赖的节点
+                    String dependencyName = dep.getName();
 
-                    // 确保依赖节点存在 (validateDependencies 已保证)
                     if (adj.containsKey(dependencyName)) {
-                        // 添加边：dependencyName -> dependerName
                         adj.get(dependencyName).add(dependerName);
-                        // 增加 dependerName 的入度
                         inDegree.put(dependerName, inDegree.get(dependerName) + 1);
                     } else {
-                        // 这个错误理论上不应发生
                         throw new IllegalStateException(String.format("[%s] DAG '%s': 在拓扑排序中发现未经验证的依赖 '%s' -> '%s'",
                                 contextType.getSimpleName(), getDagName(), dependencyName, dependerName));
                     }
@@ -277,7 +273,6 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             }
         }
 
-        // Kahn's Algorithm (保持不变)
         Queue<String> queue = new LinkedList<>();
         for (Map.Entry<String, Integer> entry : inDegree.entrySet()) {
             if (entry.getValue() == 0) {
@@ -302,9 +297,9 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             Set<String> remainingNodes = nodesByName.keySet().stream()
                     .filter(n -> !sortedOrder.contains(n))
                     .collect(Collectors.toSet());
-            log.error("[{}] DAG '{}': 拓扑排序失败，图中存在循环。未排序节点（可能参与循环）: {}",
+            log.error("[{}] DAG '{}': 拓扑排序失败，图中可能存在基于显式依赖的循环或节点不可达。未排序节点: {}",
                     contextType.getSimpleName(), getDagName(), remainingNodes);
-            throw new IllegalStateException(String.format("[%s] DAG '%s': 拓扑排序失败，检测到循环。未排序节点: %s",
+            throw new IllegalStateException(String.format("[%s] DAG '%s': 拓扑排序失败，检测到循环或节点不可达 。未排序节点: %s",
                     contextType.getSimpleName(), getDagName(), remainingNodes));
         }
 
@@ -312,28 +307,29 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
     }
 
     private void printDagStructure() {
-        if (!log.isInfoEnabled() || nodesByName.isEmpty()) return; // 如果没有节点，不打印
+        if (!log.isInfoEnabled() || nodesByName.isEmpty()) return;
 
-        log.info("[{}] DAG '{}' 结构表示 (使用有效依赖):", contextType.getSimpleName(), getDagName());
+        log.info("[{}] DAG '{}' 结构表示 (基于显式定义的依赖):", contextType.getSimpleName(), getDagName());
         StringBuilder builder = new StringBuilder("\n");
         builder.append(String.format("%-40s | %-30s | %-40s | %-40s\n",
-                "节点名称 (Payload 类型)", "实现类", "依赖节点 (所需 Payload)", "被依赖节点"));
+                "节点名称 (Payload 类型)", "实现类", "显式依赖节点 (所需 Payload)", "被显式依赖节点"));
         StringBuilder divider = new StringBuilder();
         for (int i = 0; i < 155; i++) divider.append("-");
         builder.append(divider).append("\n");
 
-        Map<String, Set<String>> dependsOn = new HashMap<>(); // key 依赖于 value set
-        Map<String, Set<String>> dependedBy = new HashMap<>(); // key 被 value set 依赖
+        Map<String, Set<String>> dependsOn = new HashMap<>();
+        Map<String, Set<String>> dependedBy = new HashMap<>();
 
+        // 初始化所有节点的映射
         for (String nodeName : nodesByName.keySet()) {
             dependsOn.put(nodeName, new HashSet<>());
             dependedBy.put(nodeName, new HashSet<>());
         }
 
-        for (DagNode<C, ?, ?> node : getAllNodes()) {
-            String nodeName = node.getName();
-            // *** 使用 getEffectiveDependencies ***
-            List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
+        // 填充依赖关系
+        for (Map.Entry<String, List<DependencyDescriptor>> entry : explicitDependencies.entrySet()) {
+            String nodeName = entry.getKey();
+            List<DependencyDescriptor> dependencies = entry.getValue();
             if (!dependencies.isEmpty()) {
                 for (DependencyDescriptor dep : dependencies) {
                     String depName = dep.getName();
@@ -345,32 +341,26 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             }
         }
 
-        // 确保按执行顺序列出
-        List<String> nodesToIterate; // 用于迭代打印的节点列表
+        // 按执行顺序列出节点
+        List<String> nodesToIterate;
         if (!executionOrder.isEmpty()) {
-            // 如果有执行顺序，直接使用它，不需要排序
             nodesToIterate = executionOrder;
-            log.debug("Printing DAG structure using execution order.");
-        } else if (!nodesByName.isEmpty()) {
-            // 如果没有执行顺序，但有节点，则按名称排序打印
-            log.debug("Printing DAG structure sorted by node name (no execution order available).");
-            nodesToIterate = new ArrayList<>(nodesByName.keySet());
-            Collections.sort(nodesToIterate); // 对新创建的 ArrayList 排序
         } else {
-            // 没有节点
-            nodesToIterate = Collections.emptyList();
+            // 如果没有执行顺序（例如初始化失败或空DAG），按名称排序打印
+            nodesToIterate = new ArrayList<>(nodesByName.keySet());
+            Collections.sort(nodesToIterate);
         }
 
         if (nodesToIterate.isEmpty()) {
             builder.append("  (DAG 为空)\n");
         } else {
-            // 使用确定好的列表进行迭代
             for (String nodeName : nodesToIterate) {
                 DagNode<C, ?, ?> node = nodesByName.get(nodeName);
                 if (node == null) continue; // 防御性检查
 
                 String nameAndPayloadType = String.format("%s (%s)", nodeName, node.getPayloadType().getSimpleName());
                 String implClass = node.getClass().getSimpleName();
+                // 获取显式依赖和被依赖信息
                 String dependsOnStr = formatNodeSet(dependsOn.get(nodeName));
                 String dependedByStr = formatNodeSet(dependedBy.get(nodeName));
 
@@ -379,12 +369,11 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             }
         }
 
-
         if (!executionOrder.isEmpty()) {
             builder.append("\n执行路径 (→ 表示执行顺序):\n");
             builder.append(String.join(" → ", executionOrder));
         } else if (!nodesByName.isEmpty()) {
-            builder.append("\n(无有效执行路径 - 可能存在循环或未初始化)\n");
+            builder.append("\n(无有效执行路径 - 可能存在循环、节点不可达或未初始化)\n");
         }
 
         log.info(builder.toString());
@@ -396,14 +385,13 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         StringBuilder dotGraph = new StringBuilder();
         String graphName = String.format("DAG_%s_%s", contextType.getSimpleName(), getDagName().replaceAll("\\W+", "_"));
         dotGraph.append(String.format("digraph %s {\n", graphName));
-        dotGraph.append(String.format("  label=\"DAG Structure (%s - %s) - Effective Dependencies\";\n", contextType.getSimpleName(), getDagName()));
+        dotGraph.append(String.format("  label=\"DAG Structure (%s - %s) - Explicit Dependencies Only\";\n", contextType.getSimpleName(), getDagName()));
         dotGraph.append("  labelloc=top;\n");
         dotGraph.append("  fontsize=16;\n");
-        dotGraph.append("  rankdir=LR;\n"); // Left-to-Right layout
+        dotGraph.append("  rankdir=LR;\n");
         dotGraph.append("  node [shape=record, style=\"rounded,filled\", fillcolor=\"lightblue\", fontname=\"Arial\", fontsize=10];\n");
         dotGraph.append("  edge [fontname=\"Arial\", fontsize=9];\n");
 
-        // 添加节点
         for (String nodeName : nodesByName.keySet()) {
             DagNode<C, ?, ?> node = nodesByName.get(nodeName);
             if (node == null) continue;
@@ -414,15 +402,12 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             dotGraph.append(String.format("  \"%s\" [label=\"%s\"];\n", nodeName, label));
         }
 
-        // 添加边 (基于有效依赖)
-        for (DagNode<C, ?, ?> node : getAllNodes()) {
-            String nodeName = node.getName();
-            // *** 使用 getEffectiveDependencies ***
-            List<DependencyDescriptor> dependencies = getEffectiveDependencies(nodeName);
+        for (Map.Entry<String, List<DependencyDescriptor>> entry : explicitDependencies.entrySet()) {
+            String nodeName = entry.getKey();
+            List<DependencyDescriptor> dependencies = entry.getValue();
             if (!dependencies.isEmpty()) {
                 for (DependencyDescriptor dep : dependencies) {
                     String depName = dep.getName();
-                    // 确保两个节点都存在才画边
                     if (nodesByName.containsKey(depName) && nodesByName.containsKey(nodeName)) {
                         String edgeLabel = String.format("Payload: %s", dep.getRequiredType().getSimpleName());
                         dotGraph.append(String.format("  \"%s\" -> \"%s\" [label=\"%s\"];\n", depName, nodeName, edgeLabel));
@@ -434,7 +419,6 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         log.info("[{}] DAG '{}' DOT格式图 (可使用 Graphviz 查看):\n{}", contextType.getSimpleName(), getDagName(), dotGraph.toString());
     }
 
-    // registerNodes 逻辑不变，它只负责注册节点实例
     private void registerNodes(List<DagNode<C, ?, ?>> nodes) throws IllegalStateException {
         log.debug("[{}] DAG '{}': 开始注册 {} 个提供的节点...", contextType.getSimpleName(), getDagName(), nodes.size());
         for (DagNode<C, ?, ?> node : nodes) {
@@ -483,7 +467,6 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <P> Optional<DagNode<C, P, ?>> getNode(String nodeName, Class<P> payloadType) {
         DagNode<C, ?, ?> node = nodesByName.get(nodeName);
         if (node == null) {
