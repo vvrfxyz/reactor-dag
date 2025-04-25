@@ -27,25 +27,28 @@ public interface DagMonitorListener {
     /**
      * 当节点执行成功完成时调用。
      *
-     * @param requestId DAG 执行请求的唯一 ID。
-     * @param dagName   正在执行的 DAG 定义的名称。
-     * @param nodeName  成功完成的节点的名称。
-     * @param duration  节点逻辑的执行持续时间。
-     * @param result    成功执行返回的 NodeResult。
+     * @param requestId     DAG 执行请求的唯一 ID。
+     * @param dagName       正在执行的 DAG 定义的名称。
+     * @param nodeName      成功完成的节点的名称。
+     * @param totalDuration 节点从 onNodeStart 到成功的总持续时间。
+     * @param logicDuration 节点核心逻辑执行的持续时间 (从 execute 调用开始计时)。
+     * @param result        成功执行返回的 NodeResult。
+     * @param node          DagNode 实例。
      */
-    void onNodeSuccess(String requestId, String dagName, String nodeName, Duration duration, NodeResult<?, ?, ?> result);
+    void onNodeSuccess(String requestId, String dagName, String nodeName, Duration totalDuration, Duration logicDuration, NodeResult<?, ?, ?> result, DagNode<?, ?, ?> node);
 
     /**
      * 当节点执行失败时调用（如果适用，在重试之后）。
      *
-     * @param requestId DAG 执行请求的唯一 ID。
-     * @param dagName   正在执行的 DAG 定义的名称。
-     * @param nodeName  失败的节点的名称。
-     * @param duration  直到发生故障的持续时间（可能包括重试）。
-     * @param error     导致失败的错误。
-     * @param node      失败的 DagNode 实例。
+     * @param requestId     DAG 执行请求的唯一 ID。
+     * @param dagName       正在执行的 DAG 定义的名称。
+     * @param nodeName      失败的节点的名称。
+     * @param totalDuration 节点从 onNodeStart 到失败的总持续时间。
+     * @param logicDuration 节点核心逻辑执行的持续时间 (从 execute 调用开始计时)。 // 新增
+     * @param error         导致失败的错误。
+     * @param node          失败的 DagNode 实例。
      */
-    void onNodeFailure(String requestId, String dagName, String nodeName, Duration duration, Throwable error, DagNode<?, ?, ?> node);
+    void onNodeFailure(String requestId, String dagName, String nodeName, Duration totalDuration, Duration logicDuration, Throwable error, DagNode<?, ?, ?> node);
 
     /**
      * 当节点执行因其 shouldExecute 条件为 false 而被跳过时调用。

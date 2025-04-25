@@ -10,6 +10,7 @@ import reactor.core.scheduler.Schedulers;
 import xyz.vvrf.reactor.dag.core.*;
 import reactor.util.retry.Retry;
 import xyz.vvrf.reactor.dag.monitor.DagMonitorListener;
+
 import java.time.Instant;
 import java.time.Duration;
 import java.util.*;
@@ -33,7 +34,7 @@ public class StandardNodeExecutor {
     /**
      * 创建标准节点执行器，使用默认的 Schedulers.boundedElastic()。
      *
-     * @param defaultNodeTimeout      默认节点执行超时时间 (不能为空)
+     * @param defaultNodeTimeout 默认节点执行超时时间 (不能为空)
      */
     public StandardNodeExecutor(Duration defaultNodeTimeout) {
         this(defaultNodeTimeout, Schedulers.boundedElastic());
@@ -41,6 +42,7 @@ public class StandardNodeExecutor {
 
     /**
      * 使用指定的调度器创建 StandardNodeExecutor，不带监听器。
+     *
      * @deprecated 请使用带有监听器的构造函数以获得监控能力。
      */
     @Deprecated
@@ -51,9 +53,9 @@ public class StandardNodeExecutor {
     /**
      * 使用指定的超时、调度器和监控监听器创建 StandardNodeExecutor。
      *
-     * @param defaultNodeTimeout      节点的默认执行超时时间 (必需)。
-     * @param nodeExecutionScheduler  执行节点逻辑的调度器 (必需)。
-     * @param monitorListeners        用于监控事件的监听器列表 (可以为空，但不能为 null)。
+     * @param defaultNodeTimeout     节点的默认执行超时时间 (必需)。
+     * @param nodeExecutionScheduler 执行节点逻辑的调度器 (必需)。
+     * @param monitorListeners       用于监控事件的监听器列表 (可以为空，但不能为 null)。
      */
     public StandardNodeExecutor(Duration defaultNodeTimeout,
                                 Scheduler nodeExecutionScheduler,
@@ -169,8 +171,9 @@ public class StandardNodeExecutor {
                         } catch (Exception e) {
                             log.error("[RequestId: {}] DAG '{}': 节点 '{}' 的 shouldExecute 方法抛出异常，将视为不执行并产生错误结果。",
                                     requestId, dagName, nodeName, e);
-                            Duration duration = Duration.between(startTime, Instant.now());
-                            safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, duration, e, node));
+                            Duration totalDuration = Duration.between(startTime, Instant.now());
+                            Duration logicDuration = Duration.ZERO;
+                            safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, logicDuration, e, node));
 
                             return Mono.just(NodeResult.failure(context,
                                     new IllegalStateException("shouldExecute failed for node " + nodeName, e),
@@ -180,9 +183,8 @@ public class StandardNodeExecutor {
                         if (shouldExec) {
                             // 条件满足，执行节点 (包含重试逻辑)
                             log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 条件满足，将执行。", requestId, dagName, nodeName);
-                            // executeNodeInternal 返回 Mono<NodeResult<C, P, T>>
                             Mono<? extends NodeResult<C, P, ?>> resultMono = executeNodeInternal(
-                                    node, context, dependencyResults, timeout, requestId, dagName,startTime);
+                                    node, context, dependencyResults, timeout, requestId, dagName, startTime);
                             return resultMono;
                         } else {
                             // 条件不满足，跳过执行
@@ -195,10 +197,11 @@ public class StandardNodeExecutor {
                     // 添加顶层错误处理，用于依赖解析失败等情况
                     .onErrorResume(error -> {
                         log.error("[RequestId: {}] DAG '{}': 节点 '{}' 在执行前或依赖解析中失败: {}", requestId, dagName, nodeName, error.getMessage(), error);
-                        Duration duration = Duration.between(startTime, Instant.now());
-                        safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, duration, error, node));
-                        // 如果依赖解析早期失败，这里可能没有 context。
-                        // 如果可能，创建一个失败结果。
+                        Duration totalDuration = Duration.between(startTime, Instant.now());
+                        Duration logicDuration = Duration.ZERO;
+                        DagNode<C, ?, ?> finalNode = node;
+                        safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, logicDuration, error, finalNode));
+
                         return Mono.just(NodeResult.failure(context, error, node));
                     });
         });
@@ -368,57 +371,64 @@ public class StandardNodeExecutor {
         Class<P> expectedPayloadType = node.getPayloadType();
         Retry retrySpec = node.getRetrySpec();
 
-        return Mono.defer(() -> {
-                    log.debug("[RequestId: {}] DAG '{}': 开始执行节点 '{}' (Payload: {}, Impl: {}) 逻辑...",
-                            requestId, dagName, nodeName, expectedPayloadType.getSimpleName(), node.getClass().getSimpleName());
 
-                    // *** 1. 创建 DependencyAccessor 实例 ***
-                    DependencyAccessor<C> accessor = new DefaultDependencyAccessor<>(dependencyResultsMap);
+        return Mono.deferContextual(contextView -> {
+            Instant logicStartTime = Instant.now();
+            log.debug("[RequestId: {}] DAG '{}': 节点 '{}' (Payload: {}, Impl: {}) 核心逻辑计时开始...",
+                    requestId, dagName, nodeName, expectedPayloadType.getSimpleName(), node.getClass().getSimpleName());
 
-                    // *** 2. 调用修改后的 node.execute，传入 accessor ***
-                    return node.execute(context, accessor);
-                })
-                .subscribeOn(nodeExecutionScheduler)
-                .timeout(timeout)
-                .doOnSuccess(result -> {
-                    // 节点成功执行 (在超时时间内，可能在重试后)
-                    Duration duration = Duration.between(startTime, Instant.now());
-                    validateAndLogResult(result, expectedPayloadType, nodeName, dagName, requestId);
-                    // 在验证/记录日志之后通知监听器成功
-                    if (result.isSuccess()) { // 再次检查结果状态
-                        safeNotifyListeners(l -> l.onNodeSuccess(requestId, dagName, nodeName, duration, result));
-                    } else if (result.isFailure()) {
-                        // 理想情况下应由 onError 捕获，但如果 NodeResult 本身指示失败，则处理
-                        Throwable error = result.getError().orElse(new RuntimeException("NodeResult indicated failure with no error object"));
-                        safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, duration, error, node));
-                    } else { // 跳过情况已在前面处理
-                        log.debug("[RequestId: {}] DAG '{}': Node '{}' finished in success path but result is not success/failure? Status: {}",
-                                requestId, dagName, nodeName, result.getStatus());
-                    }
-                })
-                .doOnError(error -> {
-                    if (!(error instanceof TimeoutException)) {
-                        log.debug(
-                                "[RequestId: {}] DAG '{}': 节点 '{}' 执行尝试失败 (非超时): {}",
+            DependencyAccessor<C> accessor = new DefaultDependencyAccessor<>(dependencyResultsMap);
+
+            return node.execute(context, accessor)
+                    .subscribeOn(nodeExecutionScheduler)
+                    .timeout(timeout)
+                    .doOnEach(signal -> {
+                        if (!signal.isOnComplete()) {
+                            // 从信号的 Context 中获取 logicStartTime
+                            signal.getContextView().<Instant>getOrEmpty("logicStartTime")
+                                    .ifPresent(lStartTime -> {
+                                        Instant endTime = Instant.now();
+                                        Duration totalDuration = Duration.between(startTime, endTime);
+                                        Duration logicDuration = Duration.between(lStartTime, endTime);
+
+                                        if (signal.isOnNext()) {
+                                            NodeResult<C, P, T> result = (NodeResult<C, P, T>) signal.get();
+                                            validateAndLogResult(result, expectedPayloadType, nodeName, dagName, requestId);
+                                            if (result.isSuccess()) {
+                                                safeNotifyListeners(l -> l.onNodeSuccess(requestId, dagName, nodeName, totalDuration, logicDuration, result, node));
+                                            } else {
+                                                Throwable err = result.getError().orElse(new RuntimeException("NodeResult in onNext indicated failure with no error object"));
+                                                log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 在 doOnEach 的 onNext 中收到非成功结果，按失败处理。", requestId, dagName, nodeName);
+                                                safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, logicDuration, err, node));
+                                            }
+                                        } else if (signal.isOnError()) {
+                                            Throwable error = signal.getThrowable();
+                                            if (error instanceof TimeoutException) {
+                                                log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 执行尝试（在 doOnEach 中检测到）超时 ({}).", requestId, dagName, nodeName, timeout);
+                                                safeNotifyListeners(l -> l.onNodeTimeout(requestId, dagName, nodeName, timeout, node));
+                                            } else {
+                                                log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 执行尝试（在 doOnEach 中检测到）失败: {}", requestId, dagName, nodeName, error.getMessage());
+                                            }
+                                        }
+                                    });
+                        }
+                    })
+                    .retryWhen(retrySpec != null ? retrySpec : Retry.max(0))
+                    .onErrorResume(error -> Mono.deferContextual(errorContextView -> {
+                        Instant endTime = Instant.now();
+                        Instant lStartTime = errorContextView.<Instant>getOrDefault("logicStartTime", startTime);
+                        Duration totalDuration = Duration.between(startTime, endTime);
+                        Duration logicDuration = Duration.between(lStartTime, endTime);
+
+                        log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 执行最终失败: {}",
                                 requestId, dagName, nodeName, error.getMessage(), error);
-                        safeNotifyListeners(l -> l.onNodeTimeout(requestId, dagName, nodeName, timeout, node));
-                    } else {
-                        log.debug(
-                                "[RequestId: {}] DAG '{}': 节点 '{}' 执行尝试超时 ({}).",
-                                requestId, dagName, nodeName, timeout);
-                    }
-                })
-                .retryWhen(retrySpec != null ? retrySpec : Retry.max(0))
-                .onErrorResume(error -> {
-                    // 节点执行最终失败 (在重试后，或立即失败)
-                    Duration duration = Duration.between(startTime, Instant.now());
-                    log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 执行失败 (重试耗尽或不可重试): {}",
-                            requestId, dagName, nodeName, error.getMessage(), error);
-                    // 通知监听器最终的失败
-                    safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, duration, error, node));
-                    // 构建并返回一个失败的 NodeResult
-                    return Mono.just(NodeResult.failure(context, error, node));
-                });
+
+                        safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, logicDuration, error, node));
+
+                        return Mono.just(NodeResult.failure(context, error, node));
+                    }))
+                    .contextWrite(ctx -> ctx.put("logicStartTime", logicStartTime));
+        });
     }
 
     /**
