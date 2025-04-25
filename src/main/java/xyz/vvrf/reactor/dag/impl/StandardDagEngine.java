@@ -82,7 +82,7 @@ public class StandardDagEngine {
             throw new IllegalStateException(String.format("DAG '%s' is not initialized.", dagName));
         }
 
-        log.info("[RequestId: {}] 开始执行 DAG '{}' (上下文类型: {})",
+        log.debug("[RequestId: {}] 开始执行 DAG '{}' (上下文类型: {})",
                 actualRequestId, dagName, dagDefinition.getContextType().getSimpleName());
 
         // 为当前请求创建节点结果缓存 (Mono<NodeResult>)
@@ -259,10 +259,10 @@ public class StandardDagEngine {
 
         // 使用 merge 并发合并所有节点的事件流
         return Flux.merge(nodesEventFlux)
-                .doOnSubscribe(s -> log.info("[RequestId: {}] DAG '{}' 事件流已订阅，开始接收节点事件。", requestId, dagName))
-                .doOnNext(event -> log.trace("[RequestId: {}] DAG '{}' 收到事件: {}", requestId, dagName, event))
-                .doOnComplete(() -> log.info("[RequestId: {}] DAG '{}' 所有节点事件流处理完成。", requestId, dagName))
-                .doOnError(e -> log.error("[RequestId: {}] DAG '{}' 合并事件流时发生错误: {}",
+                .doOnSubscribe(s -> log.debug("[RequestId: {}] DAG '{}' 事件流已订阅，开始接收节点事件。", requestId, dagName))
+                .doOnNext(event -> log.debug("[RequestId: {}] DAG '{}' 收到事件: {}", requestId, dagName, event))
+                .doOnComplete(() -> log.debug("[RequestId: {}] DAG '{}' 所有节点事件流处理完成。", requestId, dagName))
+                .doOnError(e -> log.debug("[RequestId: {}] DAG '{}' 合并事件流时发生错误: {}",
                         requestId, dagName, e.getMessage(), e))
                 // doFinally 在完成、错误或取消时都会执行
                 .doFinally(signal -> cleanupCache(requestCache, requestId, dagName, signal));
@@ -278,7 +278,7 @@ public class StandardDagEngine {
             SignalType signal) { // signal 可以是 onComplete, onError, cancel
 
         long cacheSize = requestCache.estimatedSize();
-        log.info("[RequestId: {}] DAG '{}' 事件流终止 (信号: {}), 清理请求缓存 (当前大小: {}).",
+        log.debug("[RequestId: {}] DAG '{}' 事件流终止 (信号: {}), 清理请求缓存 (当前大小: {}).",
                 requestId, dagName, signal, cacheSize);
         // 使所有缓存条目失效
         requestCache.invalidateAll();

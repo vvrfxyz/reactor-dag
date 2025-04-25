@@ -5,7 +5,7 @@
 
   <groupId>xyz.vvrf</groupId>
   <artifactId>reactor-dag</artifactId>
-  <version>1.0.0</version>
+  <version>0.0.1</version>
   <packaging>jar</packaging>
 
   <name>Reactor DAG</name>
@@ -231,17 +231,4 @@
       </build>
     </profile>
   </profiles>
-
-<!--  <distributionManagement>-->
-<!--    <repository>-->
-<!--      &lt;!&ndash; RELEASE &ndash;&gt;-->
-<!--      <id>cashimRepo</id>-->
-<!--      <url>http://10.0.249.1:8081/repository/maven-releases/</url>-->
-<!--    </repository>-->
-<!--    <snapshotRepository>-->
-<!--      &lt;!&ndash; SNAPSHOT版本 &ndash;&gt;-->
-<!--      <id>cashimRepo</id>-->
-<!--      <url>http://10.0.249.1:8081/repository/maven-snapshots/</url>-->
-<!--    </snapshotRepository>-->
-<!--  </distributionManagement>-->
 </project>
