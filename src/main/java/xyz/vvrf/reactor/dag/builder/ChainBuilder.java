@@ -1,27 +1,28 @@
-package xyz.vvrf.reactor.dag.builder; // 可以放在一个新的包里
+package xyz.vvrf.reactor.dag.builder;
 
 import lombok.extern.slf4j.Slf4j;
-import xyz.vvrf.reactor.dag.core.DagDefinition; // 引入接口
 import xyz.vvrf.reactor.dag.core.DagNode;
-import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
-import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition; // 引入改造后的类
+import xyz.vvrf.reactor.dag.core.InputRequirement;
+import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * DAG 链式构建器。
- * 用于以编程方式定义节点间的依赖关系，覆盖节点自身的 getDependencies()。
- * 需要配合改造后的 AbstractDagDefinition 使用，该 Definition 包含 addExplicitDependencies 方法。
+ * 用于以编程方式定义节点间的执行顺序依赖 (边) 和输入数据映射。
  *
- * @author ruifeng.wen
  * @param <C> 上下文类型
+ * @author ruifeng.wen (Refactored by Devin)
  */
 @Slf4j
 public class ChainBuilder<C> {
 
     private final AbstractDagDefinition<C> dagDefinition;
-    private final Map<String, List<DependencyDescriptor>> explicitDependenciesMap;
+    // 存储执行依赖关系：目标节点 -> [源节点列表]
+    private final Map<String, List<String>> executionDependencies = new ConcurrentHashMap<>();
+    // 存储输入映射：目标节点 -> [输入需求 -> 源节点名称]
+    private final Map<String, Map<InputRequirement<?>, String>> inputMappings = new ConcurrentHashMap<>();
 
     /**
      * 创建 ChainBuilder 实例。
@@ -31,133 +32,167 @@ public class ChainBuilder<C> {
      */
     public ChainBuilder(AbstractDagDefinition<C> dagDefinition) {
         this.dagDefinition = Objects.requireNonNull(dagDefinition, "DagDefinition 不能为空");
-        this.explicitDependenciesMap = new ConcurrentHashMap<>();
         log.info("[{}] DAG '{}': ChainBuilder 已创建。",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
     }
 
     /**
-     * 添加一个节点到构建器，并定义它的显式依赖。
-     * 如果一个节点被多次调用此方法，后续调用会覆盖之前的依赖设置。
+     * 定义一个节点的执行顺序依赖。
+     * 指明 `targetNodeName` 必须在所有 `sourceNodeNames` 执行完成后才能执行。
+     * 如果一个节点被多次调用此方法，后续调用会覆盖之前的执行依赖设置。
      *
-     * @param nodeName           要添加或配置依赖的目标节点的名称 (必须已在 DagDefinition 注册)。
-     * @param dependencyNodeNames 它所依赖的节点的名称数组。如果为空或不传，表示此节点在此链中无显式依赖。
+     * @param targetNodeName      目标节点的名称 (必须已在 DagDefinition 注册)。
+     * @param sourceNodeNames 它在执行顺序上依赖的节点的名称数组。如果为空或不传，表示此节点是执行起点之一。
      * @return 当前 ChainBuilder 实例，支持链式调用。
-     * @throws IllegalArgumentException 如果目标节点或依赖的节点未在 DagDefinition 中注册，
-     *                                或无法获取其 PayloadType。
+     * @throws IllegalArgumentException 如果目标节点或源节点未在 DagDefinition 中注册。
      * @throws NullPointerException 如果节点名称为 null。
      */
-    public ChainBuilder<C> node(String nodeName, String... dependencyNodeNames) {
-        Objects.requireNonNull(nodeName, "目标节点名称不能为空");
+    public ChainBuilder<C> node(String targetNodeName, String... sourceNodeNames) {
+        Objects.requireNonNull(targetNodeName, "目标节点名称不能为空");
 
-        // 确认目标节点已注册 (使用 nodeName)
-        if (!dagDefinition.getNodeAnyType(nodeName).isPresent()) {
-            String errorMsg = String.format("目标节点 '%s' 未在 DagDefinition '%s' 中注册。",
-                    nodeName, dagDefinition.getDagName());
-            log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
-            throw new IllegalArgumentException(errorMsg);
-        }
+        validateNodeExists(targetNodeName, "目标节点");
 
-        List<DependencyDescriptor> dependencies = new ArrayList<>();
-        if (dependencyNodeNames != null) {
-            for (String depNodeName : dependencyNodeNames) {
-                Objects.requireNonNull(depNodeName, "依赖节点名称不能为空");
-
-                // 从 DagDefinition 中查找依赖节点实例以获取其 PayloadType (使用 depNodeName)
-                Optional<DagNode<C, ?, ?>> depNodeOpt = dagDefinition.getNodeAnyType(depNodeName);
-                if (!depNodeOpt.isPresent()) {
-                    String errorMsg = String.format("节点 '%s' 的依赖节点 '%s' 未在 DagDefinition '%s' 中注册。",
-                            nodeName, depNodeName, dagDefinition.getDagName());
-                    log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
-                    throw new IllegalArgumentException(errorMsg);
-                }
-
-                DagNode<C, ?, ?> depNode = depNodeOpt.get();
-                Class<?> requiredType = depNode.getPayloadType();
-                if (requiredType == null) {
-                    String errorMsg = String.format("节点 '%s' 的依赖节点 '%s' (类: %s) 未提供有效的 PayloadType。",
-                            nodeName, depNodeName, depNode.getClass().getName()); // 日志中仍可包含类名
-                    log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
-                    throw new IllegalArgumentException(errorMsg);
-                }
-
-                dependencies.add(new DependencyDescriptor(depNodeName, requiredType));
+        List<String> sources = new ArrayList<>();
+        if (sourceNodeNames != null) {
+            for (String sourceNodeName : sourceNodeNames) {
+                Objects.requireNonNull(sourceNodeName, "源节点名称不能为空");
+                validateNodeExists(sourceNodeName, "源节点");
+                sources.add(sourceNodeName);
             }
         }
 
-        log.debug("[{}] DAG '{}': Builder 定义节点 '{}' 依赖于: {}",
+        log.debug("[{}] DAG '{}': Builder 定义节点 '{}' 执行依赖于: {}",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
-                nodeName, dependencies);
-        // *** 使用 nodeName 作为 Key ***
-        explicitDependenciesMap.put(nodeName, dependencies);
+                targetNodeName, sources.isEmpty() ? "<无>" : sources);
+        executionDependencies.put(targetNodeName, sources);
         return this;
     }
 
     /**
-     * 构建最终的显式依赖映射。
-     * 将内部以 Class 为键的映射转换为以节点名称字符串为键的映射。
+     * 定义一个输入数据映射 (无限定符)。
+     * 指明 `targetNodeName` 需要的类型为 `inputType` 的输入，由 `sourceNodeName` 提供。
      *
-     * @return Map<String, List<DependencyDescriptor>>，可用于调用 DagDefinition 的 addExplicitDependencies。
+     * @param <T>            输入类型
+     * @param targetNodeName 目标节点名称
+     * @param inputType      目标节点所需的输入 Payload 类型
+     * @param sourceNodeName 提供该输入的源节点名称
+     * @return 当前 ChainBuilder 实例。
+     * @throws IllegalArgumentException 如果节点未注册，或源节点不产生兼容的类型。
      */
-    public Map<String, List<DependencyDescriptor>> build() {
-        Map<String, List<DependencyDescriptor>> finalDependencies = new HashMap<>();
-        for (Map.Entry<String, List<DependencyDescriptor>> entry : explicitDependenciesMap.entrySet()) {
-            String nodeName = entry.getKey();
-
-            if (dagDefinition.getNodeAnyType(nodeName).isPresent()) {
-                finalDependencies.put(nodeName, entry.getValue());
-            } else {
-                log.warn("[{}] DAG '{}': 在构建最终依赖映射时，节点 '{}' 已不再注册，其显式依赖将被忽略。",
-                        dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
-                        nodeName);
-            }
-        }
-        log.info("[{}] DAG '{}': ChainBuilder 构建完成，生成了 {} 个节点的显式依赖配置。",
-                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
-                finalDependencies.size());
-        return finalDependencies;
+    public <T> ChainBuilder<C> mapInput(String targetNodeName, Class<T> inputType, String sourceNodeName) {
+        return mapInputInternal(targetNodeName, InputRequirement.require(inputType), sourceNodeName);
     }
 
     /**
-     * 将通过此 Builder 定义的所有显式依赖应用到关联的 DagDefinition 实例。
-     * 这是调用 {@link #build()} 并手动迭代调用 {@link AbstractDagDefinition#addExplicitDependencies(String, List)} 的便捷方法。
+     * 定义一个输入数据映射 (带限定符)。
+     * 指明 `targetNodeName` 需要的类型为 `inputType` 且限定符为 `qualifier` 的输入，由 `sourceNodeName` 提供。
+     *
+     * @param <T>            输入类型
+     * @param targetNodeName 目标节点名称
+     * @param inputType      目标节点所需的输入 Payload 类型
+     * @param qualifier      输入限定符
+     * @param sourceNodeName 提供该输入的源节点名称
+     * @return 当前 ChainBuilder 实例。
+     * @throws IllegalArgumentException 如果节点未注册，或源节点不产生兼容的类型。
+     */
+    public <T> ChainBuilder<C> mapInput(String targetNodeName, Class<T> inputType, String qualifier, String sourceNodeName) {
+        Objects.requireNonNull(qualifier, "Qualifier cannot be null when mapping input with qualifier");
+        return mapInputInternal(targetNodeName, InputRequirement.require(inputType, qualifier), sourceNodeName);
+    }
+
+    /**
+     * 定义一个输入数据映射 (使用 InputRequirement 对象)。
+     *
+     * @param <T>            输入类型
+     * @param targetNodeName 目标节点名称
+     * @param requirement    描述所需输入的 InputRequirement 对象 (其 optional 标志在此处被忽略，映射总是显式的)
+     * @param sourceNodeName 提供该输入的源节点名称
+     * @return 当前 ChainBuilder 实例。
+     * @throws IllegalArgumentException 如果节点未注册，或源节点不产生兼容的类型。
+     */
+    public <T> ChainBuilder<C> mapInput(String targetNodeName, InputRequirement<T> requirement, String sourceNodeName) {
+        Objects.requireNonNull(requirement, "InputRequirement cannot be null");
+        // 重新创建一个非 optional 的 requirement 用于映射 key，因为映射本身是显式的
+        InputRequirement<T> mappingKey = requirement.getQualifier()
+                .map(q -> InputRequirement.require(requirement.getType(), q))
+                .orElseGet(() -> InputRequirement.require(requirement.getType()));
+        return mapInputInternal(targetNodeName, mappingKey, sourceNodeName);
+    }
+
+    // 内部映射逻辑
+    private <T> ChainBuilder<C> mapInputInternal(String targetNodeName, InputRequirement<T> requirement, String sourceNodeName) {
+        Objects.requireNonNull(targetNodeName, "目标节点名称不能为空");
+        Objects.requireNonNull(sourceNodeName, "源节点名称不能为空");
+
+        // 验证节点存在性
+        validateNodeExists(targetNodeName, "目标节点");
+        DagNode<C, ?, ?> sourceNode = validateNodeExists(sourceNodeName, "源节点");
+
+        // 验证源节点是否能提供所需类型
+        Class<?> sourceOutputType = sourceNode.getPayloadType();
+        if (!requirement.getType().isAssignableFrom(sourceOutputType)) {
+            String errorMsg = String.format("输入映射错误：源节点 '%s' (输出 %s) 不能满足目标节点 '%s' 对类型 '%s' 的输入需求。",
+                    sourceNodeName, sourceOutputType.getSimpleName(), targetNodeName, requirement.getType().getSimpleName());
+            log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
+            throw new IllegalArgumentException(errorMsg);
+        }
+
+        log.debug("[{}] DAG '{}': Builder 定义输入映射: {} 的需求 {} 由 {} 提供",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
+                targetNodeName, requirement, sourceNodeName);
+
+        inputMappings.computeIfAbsent(targetNodeName, k -> new ConcurrentHashMap<>())
+                .put(requirement, sourceNodeName);
+
+        return this;
+    }
+
+    /**
+     * 验证节点是否存在于 DagDefinition 中。
+     * @param nodeName 节点名称
+     * @param nodeRole 节点角色描述 (用于错误消息)
+     * @return 找到的 DagNode 实例
+     * @throws IllegalArgumentException 如果节点不存在
+     */
+    private DagNode<C, ?, ?> validateNodeExists(String nodeName, String nodeRole) {
+        return dagDefinition.getNodeAnyType(nodeName)
+                .orElseThrow(() -> {
+                    String errorMsg = String.format("%s '%s' 未在 DagDefinition '%s' 中注册。",
+                            nodeRole, nodeName, dagDefinition.getDagName());
+                    log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
+                    return new IllegalArgumentException(errorMsg);
+                });
+    }
+
+
+    /**
+     * 将通过此 Builder 定义的所有配置应用到关联的 DagDefinition 实例。
+     * 这包括执行依赖和输入映射。
      * 调用此方法后，通常应接着调用 {@link AbstractDagDefinition#initialize()}。
      *
-     * @throws IllegalStateException 如果在应用依赖时发生错误（例如节点不存在）。
+     * @throws IllegalStateException 如果在应用配置时发生错误。
      */
     public void applyToDefinition() {
-        log.info("[{}] DAG '{}': 开始将 ChainBuilder 定义的显式依赖应用到 DagDefinition...",
+        log.info("[{}] DAG '{}': 开始将 ChainBuilder 定义的配置应用到 DagDefinition...",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
-        Map<String, List<DependencyDescriptor>> builtDependencies = this.build();
 
-        int appliedCount = 0;
-        for (Map.Entry<String, List<DependencyDescriptor>> entry : builtDependencies.entrySet()) {
-            try {
-                // 调用 DagDefinition 的方法来添加依赖
-                dagDefinition.addExplicitDependencies(entry.getKey(), entry.getValue());
-                appliedCount++;
-            } catch (IllegalArgumentException e) {
-                // addExplicitDependencies 会在节点不存在时抛出异常
-                log.error("[{}] DAG '{}': 应用节点 '{}' 的显式依赖时失败: {}",
-                        dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
-                        entry.getKey(), e.getMessage());
-                // 重新抛出，指示应用过程失败
-                throw new IllegalStateException("Failed to apply dependency for node '" + entry.getKey() + "'", e);
-            }
-        }
-        log.info("[{}] DAG '{}': 成功应用了 {} 个节点的显式依赖配置到 DagDefinition。",
-                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), appliedCount);
-    }
+        // 1. 应用执行依赖
+        log.info("[{}] DAG '{}': 应用 {} 个节点的执行依赖...",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), executionDependencies.size());
+        dagDefinition.setExecutionDependencies(executionDependencies); // 假设 Definition 有此方法
+        log.info("[{}] DAG '{}': 执行依赖应用完成。",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
 
-    /**
-     * 添加一个没有显式依赖的节点（例如，图的起点）。
-     * 等同于调用 node(nodeName)。
-     *
-     * @param nodeName 起点节点名称。
-     * @return 当前 ChainBuilder 实例。
-     */
-    public ChainBuilder<C> startWith(String nodeName) {
-        return node(nodeName);
+
+        // 2. 应用输入映射
+        log.info("[{}] DAG '{}': 应用 {} 个节点的输入映射...",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), inputMappings.size());
+        dagDefinition.setInputMappings(inputMappings); // 假设 Definition 有此方法
+        log.info("[{}] DAG '{}': 输入映射应用完成。",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
+
+        log.info("[{}] DAG '{}': ChainBuilder 配置成功应用到 DagDefinition。",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
     }
 
 }

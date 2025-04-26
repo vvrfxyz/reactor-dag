@@ -10,8 +10,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
-import xyz.vvrf.reactor.dag.example.dataParalleDag.DataParalleDag;
-import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 import xyz.vvrf.reactor.dag.spring.SpringDagEngine;
 
 import java.util.UUID;
@@ -31,8 +29,8 @@ public class DagUsageExample {
     @Autowired
     private SpringDagEngine dagEngine;
 
-    @Autowired
-    private DataParalleDag dataParalleDag;
+//    @Autowired
+//    private DataParalleDag dataParalleDag;
 
     /**
      * 处理数据的API端点，以SSE方式返回处理过程
@@ -54,16 +52,16 @@ public class DagUsageExample {
 //        return dagEngine.execute(context, requestId, dataProcessingDag);
 //    }
 
-    @GetMapping(value = "/process-paralle", produces = "text/event-stream")
-    public Flux<ServerSentEvent<?>> paralleData() {
-
-        // 创建处理上下文
-        ParalleContext context = new ParalleContext();
-
-        // 生成请求ID
-        String requestId = UUID.randomUUID().toString();
-
-        // 执行DAG并返回事件流
-        return dagEngine.execute(context, requestId, dataParalleDag);
-    }
+//    @GetMapping(value = "/process-paralle", produces = "text/event-stream")
+//    public Flux<ServerSentEvent<?>> paralleData() {
+//
+//        // 创建处理上下文
+//        ParalleContext context = new ParalleContext();
+//
+//        // 生成请求ID
+//        String requestId = UUID.randomUUID().toString();
+//
+//        // 执行DAG并返回事件流
+//        return dagEngine.execute(context, requestId, dataParalleDag);
+//    }
 }

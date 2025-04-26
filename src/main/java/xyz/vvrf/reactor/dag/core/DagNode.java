@@ -4,10 +4,13 @@ import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * DAG节点接口 - 定义节点的基本能力。
- * 节点的依赖关系通过外部配置（如 ChainBuilder）显式定义，不由节点自身声明。
+ * 节点通过 getInputRequirements() 声明其输入数据需求 (类型和可选限定符)。
+ * 节点的执行顺序依赖关系通过外部配置（如 ChainBuilder）显式定义。
  *
  * @param <C> 上下文类型 (Context Type)
  * @param <P> 节点输出的 Payload 类型 (Payload Type)
@@ -44,10 +47,10 @@ public interface DagNode<C, P, T> {
      * 如果返回 false，节点执行将被跳过，并可能产生一个表示“跳过”的 NodeResult。
      *
      * @param context      当前上下文对象
-     * @param dependencies 依赖节点的执行结果访问器。
+     * @param dependencies 依赖节点的执行结果访问器 (基于类型/限定符)。
      * @return 如果节点应该执行，则返回 true；否则返回 false。
      */
-    default boolean shouldExecute(C context, DependencyAccessor<C> dependencies) {
+    default boolean shouldExecute(C context, InputDependencyAccessor<C> dependencies) {
         return true;
     }
 
@@ -59,7 +62,7 @@ public interface DagNode<C, P, T> {
     Class<P> getPayloadType();
 
     /**
-     * 获取节点产生的事件数据类型 (新增)
+     * 获取节点产生的事件数据类型
      *
      * @return Event 类型的Class对象
      */
@@ -75,11 +78,21 @@ public interface DagNode<C, P, T> {
     }
 
     /**
+     * 声明此节点执行所需的输入数据。
+     * 框架将根据 DAG 配置来满足这些需求。
+     *
+     * @return 输入需求列表 (默认为空)
+     */
+    default List<InputRequirement<?>> getInputRequirements() {
+        return Collections.emptyList();
+    }
+
+    /**
      * 执行节点逻辑。
      *
      * @param context      上下文对象
-     * @param dependencies 依赖节点的执行结果访问器，用于安全地获取上游节点的产物。
+     * @param dependencies 依赖节点的执行结果访问器，用于安全地获取上游节点的产物 (基于类型/限定符)。
      * @return 包含执行结果 (Payload 和/或 Events) 的 Mono
      */
-    Mono<NodeResult<C, P, T>> execute(C context, DependencyAccessor<C> dependencies);
+    Mono<NodeResult<C, P, T>> execute(C context, InputDependencyAccessor<C> dependencies);
 }
