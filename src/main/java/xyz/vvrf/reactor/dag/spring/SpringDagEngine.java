@@ -43,8 +43,8 @@ public class SpringDagEngine {
         // 来创建内部的 StandardDagEngine 实例。
         this.dagEngine = new StandardDagEngine(
                 nodeExecutor,
-                properties.getEngine().getCacheTtl(),
-                properties.getEngine().getConcurrencyLevel()
+                properties.getEngine().getCacheTtl()
+//                properties.getEngine().getConcurrencyLevel()
         );
 
         log.info("SpringDagEngine 初始化完成，使用的配置: {}", properties); // 记录使用的配置
