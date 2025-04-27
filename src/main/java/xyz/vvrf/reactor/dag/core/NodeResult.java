@@ -48,10 +48,15 @@ public final class NodeResult<C, P, T> {
 
     @Getter
     private final NodeStatus status;
+
+    @Getter // 新增：记录产生此结果的节点名称
+    private final String nodeName;
+
     /**
      * 私有构造函数，请使用静态工厂方法创建实例。
      */
-    private NodeResult(C context, Optional<P> payload, Flux<Event<T>> events, Throwable error, Class<P> payloadType, Class<T> eventType, NodeStatus status) {
+    private NodeResult(String nodeName, C context, Optional<P> payload, Flux<Event<T>> events, Throwable error, Class<P> payloadType, Class<T> eventType, NodeStatus status) {
+        this.nodeName = Objects.requireNonNull(nodeName, "Node name cannot be null");
         this.context = context;
         this.payload = Objects.requireNonNull(payload, "Payload Optional 不能为 null");
         this.events = (events != null) ? events : Flux.empty();
@@ -72,7 +77,7 @@ public final class NodeResult<C, P, T> {
      */
     public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, DagNode<C, P, T> node) {
         Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(context, Optional.ofNullable(payload), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
+        return new NodeResult<>(node.getName(), context, Optional.ofNullable(payload), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
     }
 
     /**
@@ -85,7 +90,7 @@ public final class NodeResult<C, P, T> {
      */
     public static <C, P, T> NodeResult<C, P, T> success(C context, DagNode<C, P, T> node) {
         Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(context, Optional.empty(), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
+        return new NodeResult<>(node.getName(), context, Optional.empty(), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
     }
 
     /**
@@ -100,7 +105,7 @@ public final class NodeResult<C, P, T> {
     public static <C, P, T> NodeResult<C, P, T> success(C context, Flux<Event<T>> events, DagNode<C, P, T> node) {
         Objects.requireNonNull(events, "事件流不能为空");
         Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(context, Optional.empty(), events, null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
+        return new NodeResult<>(node.getName(), context, Optional.empty(), events, null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
     }
 
     /**
@@ -116,7 +121,7 @@ public final class NodeResult<C, P, T> {
     public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Flux<Event<T>> events, DagNode<C, P, T> node) {
         Objects.requireNonNull(events, "事件流不能为空");
         Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(context, Optional.ofNullable(payload), events, null, node.getPayloadType(), node.getEventType(),NodeStatus.SUCCESS);
+        return new NodeResult<>(node.getName(), context, Optional.ofNullable(payload), events, null, node.getPayloadType(), node.getEventType(),NodeStatus.SUCCESS);
     }
 
     /**
@@ -131,80 +136,7 @@ public final class NodeResult<C, P, T> {
     public static <C, P, T> NodeResult<C, P, T> failure(C context, Throwable error, DagNode<C, P, T> node) {
         Objects.requireNonNull(error, "错误对象不能为空");
         Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(context, Optional.empty(), Flux.<Event<T>>empty(), error, node.getPayloadType(), node.getEventType(), NodeStatus.FAILURE);
-    }
-
-    /**
-     * 创建一个成功的节点结果，只包含 Payload。
-     * 需要显式提供 Payload 和 Event 类型。
-     *
-     * @param context     上下文对象
-     * @param payload     节点产出的 Payload 数据 (可以为 null)
-     * @param payloadType 结果的 Payload 类型 Class 对象
-     * @param eventType   结果的 Event 类型 Class 对象
-     * @return NodeResult 实例
-     */
-    public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Class<P> payloadType, Class<T> eventType) {
-        return new NodeResult<>(context, Optional.ofNullable(payload), Flux.<Event<T>>empty(), null, payloadType, eventType, NodeStatus.SUCCESS);
-    }
-
-    /**
-     * 创建一个成功的节点结果，只包含事件流。
-     * 需要显式提供 Payload 和 Event 类型。
-     *
-     * @param context     上下文对象
-     * @param events      节点产生的事件流 (不能为空)
-     * @param payloadType 结果的 Payload 类型 Class 对象
-     * @param eventType   结果的 Event 类型 Class 对象
-     * @return NodeResult 实例
-     */
-    public static <C, P, T> NodeResult<C, P, T> success(C context, Flux<Event<T>> events, Class<P> payloadType, Class<T> eventType) {
-        Objects.requireNonNull(events, "事件流不能为空");
-        return new NodeResult<>(context, Optional.empty(), events, null, payloadType, eventType, NodeStatus.SUCCESS);
-    }
-
-    /**
-     * 创建一个成功的节点结果，同时包含 Payload 和事件流。
-     * 需要显式提供 Payload 和 Event 类型。
-     *
-     * @param context     上下文对象
-     * @param payload     节点产出的 Payload 数据 (可以为 null)
-     * @param events      节点产生的事件流 (不能为空)
-     * @param payloadType 结果的 Payload 类型 Class 对象
-     * @param eventType   结果的 Event 类型 Class 对象
-     * @return NodeResult 实例
-     */
-    public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Flux<Event<T>> events, Class<P> payloadType, Class<T> eventType) {
-        Objects.requireNonNull(events, "事件流不能为空");
-        return new NodeResult<>(context, Optional.ofNullable(payload), events, null, payloadType, eventType, NodeStatus.SUCCESS);
-    }
-
-    /**
-     * 创建一个失败的节点结果。
-     * 需要显式提供 Payload 和 Event 类型。
-     *
-     * @param context     上下文对象
-     * @param error       执行过程中发生的错误 (不能为空)
-     * @param payloadType 结果的 Payload 类型 Class 对象
-     * @param eventType   结果的 Event 类型 Class 对象
-     * @return NodeResult 实例
-     */
-    public static <C, P, T> NodeResult<C, P, T> failure(C context, Throwable error, Class<P> payloadType, Class<T> eventType) {
-        Objects.requireNonNull(error, "错误对象不能为空");
-        return new NodeResult<>(context, Optional.empty(), Flux.<Event<T>>empty(), error, payloadType, eventType, NodeStatus.FAILURE);
-    }
-
-    /**
-     * 创建一个表示节点被跳过的结果。
-     * 需要显式提供 Payload 和 Event 类型。
-     *
-     * @param context     上下文对象
-     * @param payloadType 结果的 Payload 类型 Class 对象
-     * @param eventType   结果的 Event 类型 Class 对象
-     * @return NodeResult 实例，状态为 SKIPPED
-     */
-    public static <C, P, T> NodeResult<C, P, T> skipped(C context, Class<P> payloadType, Class<T> eventType) {
-        return new NodeResult<>(context, Optional.empty(), Flux.<Event<T>>empty(), null, payloadType, eventType, NodeStatus.SKIPPED);
+        return new NodeResult<>(node.getName(), context, Optional.empty(), Flux.<Event<T>>empty(), error, node.getPayloadType(), node.getEventType(), NodeStatus.FAILURE);
     }
 
     /**
@@ -217,8 +149,16 @@ public final class NodeResult<C, P, T> {
     public static <C, P, T> NodeResult<C, P, T> skipped(C context, DagNode<C, P, T> node) {
         Objects.requireNonNull(node, "DagNode 实例不能为空");
         // 跳过的节点没有 Payload 和事件
-        return new NodeResult<>(context, Optional.empty(), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SKIPPED); // 设置 SKIPPED
+        return new NodeResult<>(node.getName(), context, Optional.empty(), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SKIPPED); // 设置 SKIPPED
     }
+
+    // --- 移除显式提供类型的工厂方法（为简化起见，强制使用 DagNode 推断） ---
+    // public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Class<P> payloadType, Class<T> eventType) { ... }
+    // public static <C, P, T> NodeResult<C, P, T> success(C context, Flux<Event<T>> events, Class<P> payloadType, Class<T> eventType) { ... }
+    // public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Flux<Event<T>> events, Class<P> payloadType, Class<T> eventType) { ... }
+    // public static <C, P, T> NodeResult<C, P, T> failure(C context, Throwable error, Class<P> payloadType, Class<T> eventType) { ... }
+    // public static <C, P, T> NodeResult<C, P, T> skipped(C context, Class<P> payloadType, Class<T> eventType) { ... }
+
 
     /**
      * 获取执行过程中的错误。
@@ -259,25 +199,25 @@ public final class NodeResult<C, P, T> {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         NodeResult<?, ?, ?> that = (NodeResult<?, ?, ?>) o;
-        // 注意：不比较 events (Flux)
-        return Objects.equals(context, that.context) &&
+        // 不比较 events (Flux) 和 context
+        return nodeName.equals(that.nodeName) &&
                 Objects.equals(payload, that.payload) &&
                 Objects.equals(error, that.error) &&
-                Objects.equals(payloadType, that.payloadType) &&
-                Objects.equals(eventType, that.eventType) &&
-                status == that.status; // 比较 status
+                payloadType.equals(that.payloadType) &&
+                eventType.equals(that.eventType) &&
+                status == that.status;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(context, payload, error, payloadType, eventType, status);
+        return Objects.hash(nodeName, payload, error, payloadType, eventType, status);
     }
 
     @Override
     public String toString() {
         return "NodeResult{" +
-                "status=" + status + // 显示 status
-                ", context=" + context +
+                "nodeName='" + nodeName + '\'' +
+                ", status=" + status +
                 ", payload=" + payload.map(Object::toString).orElse("<empty>") +
                 ", payloadType=" + payloadType.getSimpleName() +
                 ", eventType=" + eventType.getSimpleName() +

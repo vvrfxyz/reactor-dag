@@ -1,6 +1,6 @@
 package xyz.vvrf.reactor.dag.impl;
 
-import lombok.Getter;
+import lombok.Getter; // 移除，因为没有字段需要它
 import lombok.extern.slf4j.Slf4j;
 import xyz.vvrf.reactor.dag.core.*;
 
@@ -13,6 +13,9 @@ import java.util.stream.Collectors;
  * <p>
  * 此实现强制要求 DAG 内的节点名称必须唯一。
  * 执行顺序依赖和输入数据映射通过外部 (如 ChainBuilder) 配置。
+ * </p>
+ * <p>
+ * **修改**: 输入映射验证不再强制要求源节点是直接执行前驱。
  * </p>
  *
  * @param <C> 上下文类型
@@ -31,11 +34,13 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
     private Map<String, List<String>> executionAdjacencyList = Collections.emptyMap();
     // 存储每个节点的直接执行前驱
     private Map<String, Set<String>> executionPredecessors = Collections.emptyMap();
+    // 存储每个节点的直接执行后继
+    private Map<String, Set<String>> executionSuccessors = Collections.emptyMap(); // 新增
 
     private List<String> executionOrder = Collections.emptyList();
 
     private final Class<C> contextType;
-    private boolean initialized = false;
+    private volatile boolean initialized = false; // 使用 volatile 保证可见性
 
     /**
      * 构造函数
@@ -50,14 +55,14 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         if (nodes == null || nodes.isEmpty()) {
             log.warn("[{}] 未找到任何 DagNode<C, ?, ?> 类型的节点，DAG '{}' 将不可用", contextType.getSimpleName(), getDagName());
             this.executionOrder = Collections.emptyList();
-            this.initialized = false;
+            this.initialized = false; // 显式设置
         } else {
             try {
                 registerNodes(nodes);
             } catch (IllegalStateException e) {
                 log.error("[{}] DAG '{}' 节点注册失败: {}", contextType.getSimpleName(), getDagName(), e.getMessage());
                 nodesByName.clear();
-                this.initialized = false;
+                this.initialized = false; // 显式设置
                 throw e;
             }
         }
@@ -73,7 +78,10 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             log.warn("[{}] DAG '{}' 已初始化，不应再修改执行依赖。", contextType.getSimpleName(), getDagName());
             return;
         }
-        this.executionDependencies = new ConcurrentHashMap<>(Objects.requireNonNull(execDeps));
+        // 深度复制以确保不可变性
+        Map<String, List<String>> copiedDeps = new ConcurrentHashMap<>();
+        execDeps.forEach((key, value) -> copiedDeps.put(key, Collections.unmodifiableList(new ArrayList<>(value))));
+        this.executionDependencies = copiedDeps;
         log.info("[{}] DAG '{}': 已设置 {} 个节点的执行依赖。", contextType.getSimpleName(), getDagName(), execDeps.size());
     }
 
@@ -87,26 +95,26 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             log.warn("[{}] DAG '{}' 已初始化，不应再修改输入映射。", contextType.getSimpleName(), getDagName());
             return;
         }
-        this.inputMappings = new ConcurrentHashMap<>(Objects.requireNonNull(inputMaps));
+        // 深度复制
+        Map<String, Map<InputRequirement<?>, String>> copiedMaps = new ConcurrentHashMap<>();
+        inputMaps.forEach((node, mappings) -> copiedMaps.put(node, new ConcurrentHashMap<>(mappings)));
+        this.inputMappings = copiedMaps;
         log.info("[{}] DAG '{}': 已设置 {} 个节点的输入映射。", contextType.getSimpleName(), getDagName(), inputMaps.size());
     }
 
-    /**
-     * 获取指定节点的输入映射配置。
-     * @param nodeName 节点名称
-     * @return 该节点的输入映射 (InputRequirement -> sourceNodeName)，如果无映射则为空 Map。
-     */
+    @Override
     public Map<InputRequirement<?>, String> getInputMappingForNode(String nodeName) {
         return Collections.unmodifiableMap(inputMappings.getOrDefault(nodeName, Collections.emptyMap()));
     }
 
-    /**
-     * 获取指定节点的直接执行前驱节点名称集合。
-     * @param nodeName 节点名称
-     * @return 前驱节点名称集合，如果无前驱则为空 Set。
-     */
+    @Override
     public Set<String> getExecutionPredecessors(String nodeName) {
         return Collections.unmodifiableSet(executionPredecessors.getOrDefault(nodeName, Collections.emptySet()));
+    }
+
+    @Override
+    public Set<String> getExecutionSuccessors(String nodeName) {
+        return Collections.unmodifiableSet(executionSuccessors.getOrDefault(nodeName, Collections.emptySet()));
     }
 
 
@@ -121,13 +129,14 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             this.executionOrder = Collections.emptyList();
             this.executionAdjacencyList = Collections.emptyMap();
             this.executionPredecessors = Collections.emptyMap();
+            this.executionSuccessors = Collections.emptyMap();
             this.initialized = true;
             return;
         }
 
         log.info("[{}] 开始初始化和验证 DAG '{}' (基于执行依赖和输入映射)...", contextType.getSimpleName(), getDagName());
         try {
-            // 1. 构建邻接表和计算入度 (基于 executionDependencies)
+            // 1. 构建邻接表、计算前驱和后继 (基于 executionDependencies)
             buildGraphStructures();
 
             // 2. 检测执行依赖中的循环
@@ -136,61 +145,69 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             // 3. 计算拓扑执行顺序
             this.executionOrder = calculateExecutionOrder();
 
-            // 4. 验证输入映射 (必须在拓扑排序后进行，以检查前驱关系)
+            // 4. 验证输入映射 (不再检查是否为直接前驱)
             validateInputMappings();
 
-            this.initialized = true;
+            this.initialized = true; // 设置 initialized 标志
 
             log.info("[{}] DAG '{}' 初始化和验证成功", contextType.getSimpleName(), getDagName());
             log.info("[{}] DAG '{}' 执行顺序: {}", contextType.getSimpleName(), getDagName(), executionOrder);
-            printDagStructure(); // 更新打印逻辑
-            generateDotGraph(); // 更新图生成逻辑
+            printDagStructure();
+            generateDotGraph();
         } catch (IllegalStateException e) {
-            log.error("[{}] DAG '{}' 初始化或验证失败: {}", contextType.getSimpleName(), getDagName(), e.getMessage());
+            log.error("[{}] DAG '{}' 初始化或验证失败: {}", contextType.getSimpleName(), getDagName(), e.getMessage(), e); // Log stacktrace
+            // 清理状态
             this.executionOrder = Collections.emptyList();
             this.executionAdjacencyList = Collections.emptyMap();
             this.executionPredecessors = Collections.emptyMap();
-            this.initialized = false;
-            throw e;
+            this.executionSuccessors = Collections.emptyMap();
+            this.initialized = false; // 确保状态为未初始化
+            throw e; // 重新抛出异常
         }
     }
 
     private void buildGraphStructures() {
         log.debug("[{}] DAG '{}': 构建执行图结构...", contextType.getSimpleName(), getDagName());
-        Map<String, List<String>> adjList = new ConcurrentHashMap<>();
-        Map<String, Set<String>> predecessors = new ConcurrentHashMap<>();
+        Map<String, List<String>> adjList = new ConcurrentHashMap<>(); // source -> [targets]
+        Map<String, Set<String>> predecessors = new ConcurrentHashMap<>(); // target -> {sources}
+        Map<String, Set<String>> successors = new ConcurrentHashMap<>(); // source -> {targets}
 
-        // 初始化所有注册节点的邻接表和前驱集合
+        // 初始化所有注册节点的集合
         for (String nodeName : nodesByName.keySet()) {
             adjList.put(nodeName, Collections.synchronizedList(new ArrayList<>()));
             predecessors.put(nodeName, Collections.synchronizedSet(new HashSet<>()));
+            successors.put(nodeName, Collections.synchronizedSet(new HashSet<>()));
         }
 
-        // 根据 executionDependencies 构建邻接表和前驱集合
+        // 根据 executionDependencies 构建图结构
         for (Map.Entry<String, List<String>> entry : executionDependencies.entrySet()) {
             String targetNode = entry.getKey();
             List<String> sourceNodes = entry.getValue();
 
             if (!nodesByName.containsKey(targetNode)) {
                 log.warn("[{}] DAG '{}': 执行依赖中目标节点 '{}' 未注册，忽略此依赖。", contextType.getSimpleName(), getDagName(), targetNode);
-                continue;
+                continue; // 跳过这个依赖关系
             }
 
             if (sourceNodes != null) {
                 for (String sourceNode : sourceNodes) {
                     if (!nodesByName.containsKey(sourceNode)) {
                         log.warn("[{}] DAG '{}': 执行依赖中源节点 '{}' (为 '{}' 的依赖) 未注册，忽略此依赖。", contextType.getSimpleName(), getDagName(), sourceNode, targetNode);
-                        continue;
+                        continue; // 跳过这个特定的源
                     }
                     // 添加边 source -> target
                     adjList.computeIfAbsent(sourceNode, k -> Collections.synchronizedList(new ArrayList<>())).add(targetNode);
                     // 添加 target 的前驱 source
                     predecessors.computeIfAbsent(targetNode, k -> Collections.synchronizedSet(new HashSet<>())).add(sourceNode);
+                    // 添加 source 的后继 target
+                    successors.computeIfAbsent(sourceNode, k -> Collections.synchronizedSet(new HashSet<>())).add(targetNode);
                 }
             }
         }
+        // 设置为不可修改的视图
         this.executionAdjacencyList = Collections.unmodifiableMap(adjList);
         this.executionPredecessors = Collections.unmodifiableMap(predecessors);
+        this.executionSuccessors = Collections.unmodifiableMap(successors);
         log.debug("[{}] DAG '{}': 执行图结构构建完成。", contextType.getSimpleName(), getDagName());
     }
 
@@ -199,31 +216,38 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         log.debug("[{}] DAG '{}': 检测执行依赖中的循环...", contextType.getSimpleName(), getDagName());
         Set<String> visited = new HashSet<>(); // 完全访问过的节点
         Set<String> visiting = new HashSet<>(); // 当前递归路径上的节点
+        List<String> path = new ArrayList<>(); // 用于记录循环路径
 
         for (String nodeName : nodesByName.keySet()) {
             if (!visited.contains(nodeName)) {
-                checkCycleDFS(nodeName, visiting, visited);
+                path.clear(); // 开始新的 DFS 路径
+                checkCycleDFS(nodeName, visiting, visited, path);
             }
         }
         log.info("[{}] DAG '{}': 未检测到执行依赖循环", contextType.getSimpleName(), getDagName());
     }
 
-    private void checkCycleDFS(String nodeName, Set<String> visiting, Set<String> visited) {
+    private void checkCycleDFS(String nodeName, Set<String> visiting, Set<String> visited, List<String> path) {
         visiting.add(nodeName);
+        path.add(nodeName); // 将当前节点加入路径
 
         List<String> neighbors = executionAdjacencyList.getOrDefault(nodeName, Collections.emptyList());
         for (String neighbor : neighbors) {
             if (visiting.contains(neighbor)) {
                 // 发现循环
+                int cycleStartIndex = path.indexOf(neighbor);
+                String cyclePath = path.subList(cycleStartIndex, path.size()).stream()
+                        .collect(Collectors.joining(" -> ")) + " -> " + neighbor;
                 throw new IllegalStateException(
-                        String.format("[%s] DAG '%s': 检测到执行依赖循环！路径涉及 '%s' -> '%s' (可能更长)",
-                                contextType.getSimpleName(), getDagName(), neighbor, nodeName));
+                        String.format("[%s] DAG '%s': 检测到执行依赖循环！路径: %s",
+                                contextType.getSimpleName(), getDagName(), cyclePath));
             }
             if (!visited.contains(neighbor)) {
-                checkCycleDFS(neighbor, visiting, visited);
+                checkCycleDFS(neighbor, visiting, visited, path);
             }
         }
 
+        path.remove(path.size() - 1); // 回溯：从路径中移除当前节点
         visiting.remove(nodeName);
         visited.add(nodeName);
     }
@@ -233,11 +257,13 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         Map<String, Integer> inDegree = new HashMap<>();
         Queue<String> queue = new LinkedList<>();
         List<String> sortedOrder = new ArrayList<>();
+        Set<String> allRegisteredNodes = new HashSet<>(nodesByName.keySet()); // 所有注册的节点
 
-        // 计算所有节点的入度
-        for (String nodeName : nodesByName.keySet()) {
-            inDegree.put(nodeName, executionPredecessors.getOrDefault(nodeName, Collections.emptySet()).size());
-            if (inDegree.get(nodeName) == 0) {
+        // 计算所有注册节点的入度
+        for (String nodeName : allRegisteredNodes) {
+            int degree = executionPredecessors.getOrDefault(nodeName, Collections.emptySet()).size();
+            inDegree.put(nodeName, degree);
+            if (degree == 0) {
                 // 入度为0的节点入队
                 queue.offer(nodeName);
             }
@@ -247,29 +273,29 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             String u = queue.poll();
             sortedOrder.add(u);
 
-            // 将 u 的所有邻居的入度减 1
-            for (String v : executionAdjacencyList.getOrDefault(u, Collections.emptyList())) {
-                inDegree.put(v, inDegree.get(v) - 1);
-                if (inDegree.get(v) == 0) {
-                    // 如果邻居入度变为0，入队
-                    queue.offer(v);
-                }
+            // 将 u 的所有邻居（执行后继）的入度减 1
+            for (String v : executionSuccessors.getOrDefault(u, Collections.emptySet())) {
+                inDegree.computeIfPresent(v, (key, degree) -> {
+                    int newDegree = degree - 1;
+                    if (newDegree == 0) {
+                        // 如果邻居入度变为0，入队
+                        queue.offer(v);
+                    }
+                    return newDegree;
+                });
             }
         }
 
-        if (sortedOrder.size() != nodesByName.size()) {
-            Set<String> remainingNodes = nodesByName.keySet().stream()
-                    .filter(n -> !sortedOrder.contains(n))
-                    .collect(Collectors.toSet());
+        // 验证是否所有注册节点都被排序了
+        if (sortedOrder.size() != allRegisteredNodes.size()) {
+            Set<String> remainingNodes = new HashSet<>(allRegisteredNodes);
+            remainingNodes.removeAll(sortedOrder);
             log.error("[{}] DAG '{}': 拓扑排序失败，图中可能存在循环或节点不可达。未排序节点: {}",
                     contextType.getSimpleName(), getDagName(), remainingNodes);
-            // 循环应该在 detectCycles 中被捕获，这里更可能是节点不可达（如果没有执行依赖指向它，且它不是起点）
-            // 或者是有节点注册了但没有被包含在任何执行依赖中。
-            // 允许这种情况？还是强制所有节点必须在执行图中？ 暂时允许，只对能排序的部分排序。
-            // 但如果 input mapping 引用了未排序的节点，后面会报错。
+            // 循环应该在 detectCycles 中被捕获。这里通常意味着有节点注册了但未包含在执行图中（孤立节点）。
             // 严格模式：如果排序结果数量不等于节点数量，则抛异常。
-            throw new IllegalStateException(String.format("[%s] DAG '%s': 拓扑排序失败，排序节点数 (%d) 与总节点数 (%d) 不匹配。可能存在循环或孤立节点。未排序节点: %s",
-                    contextType.getSimpleName(), getDagName(), sortedOrder.size(), nodesByName.size(), remainingNodes));
+            throw new IllegalStateException(String.format("[%s] DAG '%s': 拓扑排序失败，排序节点数 (%d) 与总注册节点数 (%d) 不匹配。可能存在未处理的循环或孤立节点。未排序节点: %s",
+                    contextType.getSimpleName(), getDagName(), sortedOrder.size(), allRegisteredNodes.size(), remainingNodes));
         }
 
         return Collections.unmodifiableList(sortedOrder);
@@ -277,61 +303,63 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
     private void validateInputMappings() {
         log.debug("[{}] DAG '{}': 验证输入映射...", contextType.getSimpleName(), getDagName());
-        Set<String> executionOrderSet = new HashSet<>(this.executionOrder);
 
-        for (String targetNodeName : this.executionOrder) {
+        for (String targetNodeName : nodesByName.keySet()) { // 遍历所有节点检查其输入
             DagNode<C, ?, ?> targetNode = nodesByName.get(targetNodeName);
-            if (targetNode == null) continue;
+            if (targetNode == null) continue; // 不应发生，但做防御性检查
 
             List<InputRequirement<?>> requirements = targetNode.getInputRequirements();
             Map<InputRequirement<?>, String> nodeMappings = inputMappings.getOrDefault(targetNodeName, Collections.emptyMap());
-            Set<String> predecessors = executionPredecessors.getOrDefault(targetNodeName, Collections.emptySet());
 
             // 检查每个输入需求
             for (InputRequirement<?> req : requirements) {
                 String sourceNodeName = nodeMappings.get(req);
 
                 if (sourceNodeName == null) {
-                    // 没有显式映射，尝试自动解析 (如果无限定符且只有一个前驱提供该类型)
+                    // 没有显式映射，尝试自动解析 (仅当无限定符时)
                     if (!req.getQualifier().isPresent()) {
-                        List<String> potentialSources = predecessors.stream()
+                        // 查找所有执行前驱中，类型兼容且无限定符的唯一节点
+                        List<String> potentialSources = executionPredecessors.getOrDefault(targetNodeName, Collections.emptySet()).stream()
                                 .map(nodesByName::get)
                                 .filter(Objects::nonNull)
                                 .filter(p -> req.getType().isAssignableFrom(p.getPayloadType()))
+                                // 检查这个潜在源节点是否也有限定符的输出（这里简化，假设节点只有一个输出）
                                 .map(DagNode::getName)
                                 .collect(Collectors.toList());
 
                         if (potentialSources.size() == 1) {
                             sourceNodeName = potentialSources.get(0);
-                            log.debug("[{}] DAG '{}': 节点 '{}' 的输入需求 {} 自动解析到源 '{}'",
+                            log.debug("[{}] DAG '{}': 节点 '{}' 的输入需求 {} 自动解析到直接前驱源 '{}'",
                                     contextType.getSimpleName(), getDagName(), targetNodeName, req, sourceNodeName);
-                            // 注意并发修改问题，最好在构建时完成
-                             nodeMappings.put(req, sourceNodeName);
+                            // 动态添加自动解析的映射，以便后续使用
+                            inputMappings.computeIfAbsent(targetNodeName, k -> new ConcurrentHashMap<>()).put(req, sourceNodeName);
                         } else if (potentialSources.size() > 1) {
+                            // 存在多个直接前驱提供兼容类型，无法自动解析
                             if (!req.isOptional()) {
                                 throw new IllegalStateException(
-                                        String.format("[%s] DAG '%s': 节点 '%s' 的必需输入需求 %s 存在歧义，多个前驱节点 (%s) 提供兼容类型，需要显式 mapInput()。",
+                                        String.format("[%s] DAG '%s': 节点 '%s' 的必需输入需求 %s 存在歧义，多个直接执行前驱 (%s) 提供兼容类型，需要使用 mapInput() 显式映射。",
                                                 contextType.getSimpleName(), getDagName(), targetNodeName, req, potentialSources));
                             } else {
-                                log.warn("[{}] DAG '{}': 节点 '{}' 的可选输入需求 {} 存在歧义 (%s)，将无法自动获取，返回 Optional.empty()。",
+                                log.warn("[{}] DAG '{}': 节点 '{}' 的可选输入需求 {} 存在歧义 (%s)，无法自动解析，运行时将返回 Optional.empty()。",
                                         contextType.getSimpleName(), getDagName(), targetNodeName, req, potentialSources);
                                 // 标记为无法满足，即使是可选的
-                                sourceNodeName = null;
+                                sourceNodeName = null; // 确保后续检查知道没有找到源
                             }
                         } else {
-                            // 没有找到源
+                            // 没有直接前驱提供兼容类型
                             if (!req.isOptional()) {
+                                // 对于必需输入，如果没有任何直接前驱提供，也需要显式映射（可能来自间接依赖）
                                 throw new IllegalStateException(
-                                        String.format("[%s] DAG '%s': 节点 '%s' 的必需输入需求 %s 没有找到兼容的源节点或显式映射。",
+                                        String.format("[%s] DAG '%s': 节点 '%s' 的必需输入需求 %s 没有找到兼容的直接执行前驱，需要使用 mapInput() 显式映射（可能映射到间接依赖）。",
                                                 contextType.getSimpleName(), getDagName(), targetNodeName, req));
                             } else {
-                                log.debug("[{}] DAG '{}': 节点 '{}' 的可选输入需求 {} 未找到源或映射，将返回 Optional.empty()。",
+                                log.debug("[{}] DAG '{}': 节点 '{}' 的可选输入需求 {} 未找到兼容的直接执行前驱，将返回 Optional.empty()。",
                                         contextType.getSimpleName(), getDagName(), targetNodeName, req);
                                 sourceNodeName = null;
                             }
                         }
                     } else {
-                        // 有限定符但没有映射
+                        // 有限定符但没有显式映射
                         if (!req.isOptional()) {
                             throw new IllegalStateException(
                                     String.format("[%s] DAG '%s': 节点 '%s' 的必需输入需求 %s (带限定符) 没有显式映射。",
@@ -344,35 +372,29 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
                     }
                 }
 
-                // 如果找到了映射源 (显式或自动)
+                // 如果找到了映射源 (显式或自动解析的)
                 if (sourceNodeName != null) {
                     // 验证源节点是否存在
                     DagNode<C, ?, ?> sourceNode = nodesByName.get(sourceNodeName);
                     if (sourceNode == null) {
                         throw new IllegalStateException(
-                                String.format("[%s] DAG '%s': 节点 '%s' 的输入需求 %s 映射到的源节点 '%s' 不存在。",
-                                        contextType.getSimpleName(), getDagName(), targetNodeName, req, sourceNodeName));
-                    }
-                    // 验证源节点是否是执行前驱 (基于拓扑排序结果)
-                    // 注意：这里检查的是直接前驱。如果允许间接前驱提供数据，逻辑会更复杂。
-                    // 假设：数据只能由直接执行前驱提供。
-                    if (!predecessors.contains(sourceNodeName)) {
-                        throw new IllegalStateException(
-                                String.format("[%s] DAG '%s': 节点 '%s' 的输入需求 %s 映射到的源节点 '%s' 不是其直接执行前驱。",
+                                String.format("[%s] DAG '%s': 节点 '%s' 的输入需求 %s 映射到的源节点 '%s' 未在 DAG 中注册。",
                                         contextType.getSimpleName(), getDagName(), targetNodeName, req, sourceNodeName));
                     }
 
-                    // 验证源节点输出类型是否兼容 (ChainBuilder 已检查，这里再次确认)
+                    // 现在只验证类型兼容性（ChainBuilder 已做，这里再次确认）
                     if (!req.getType().isAssignableFrom(sourceNode.getPayloadType())) {
+                        // 这个理论上不应该发生，因为 ChainBuilder 已经检查过了
                         throw new IllegalStateException(
-                                String.format("[%s] DAG '%s': 节点 '%s' 的输入需求 %s (类型 %s) 与源节点 '%s' 的输出类型 (%s) 不兼容。",
+                                String.format("[%s] DAG '%s': 内部错误 - 节点 '%s' 的输入需求 %s (类型 %s) 与已验证的源节点 '%s' 的输出类型 (%s) 不兼容。",
                                         contextType.getSimpleName(), getDagName(), targetNodeName, req, req.getType().getSimpleName(),
                                         sourceNodeName, sourceNode.getPayloadType().getSimpleName()));
                     }
                 } else if (!req.isOptional()) {
-                    // 如果是必需输入，到这里还没找到源，说明有问题（前面的逻辑应该已经抛异常了）
+                    // 如果是必需输入，到这里还没找到源（显式映射没有，自动解析也没成功），则抛出异常
+                    // （前面的逻辑应该已经覆盖了所有必需输入找不到源的情况，这里是最后防线）
                     throw new IllegalStateException(
-                            String.format("[%s] DAG '%s': 内部错误：节点 '%s' 的必需输入需求 %s 在验证结束时仍未找到源。",
+                            String.format("[%s] DAG '%s': 节点 '%s' 的必需输入需求 %s 在验证结束时仍未找到有效的源映射。",
                                     contextType.getSimpleName(), getDagName(), targetNodeName, req));
                 }
             }
@@ -395,7 +417,6 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         // 检查节点声明的输出类型是否与请求的类型兼容
         if (payloadType.isAssignableFrom(node.getPayloadType())) {
             // 类型兼容，进行强制转换
-            // 这是安全的，因为我们检查了 isAssignableFrom
             @SuppressWarnings("unchecked")
             DagNode<C, P, ?> typedNode = (DagNode<C, P, ?>) node;
             return Optional.of(typedNode);
@@ -421,9 +442,10 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
     @Override
     public List<String> getExecutionOrder() {
         if (!initialized) {
-            log.warn("[{}] DAG '{}' 尚未初始化，执行顺序可能不准确或为空。", contextType.getSimpleName(), getDagName());
+            // 抛出异常而不是警告，因为未初始化的顺序是无效的
+            throw new IllegalStateException(String.format("[%s] DAG '%s' 尚未初始化，无法获取执行顺序。", contextType.getSimpleName(), getDagName()));
         }
-        return executionOrder;
+        return executionOrder; // 返回的是不可修改列表
     }
 
     @Override
@@ -448,41 +470,37 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
     private void registerNodes(List<DagNode<C, ?, ?>> nodes) throws IllegalStateException {
         log.debug("[{}] DAG '{}': 开始注册 {} 个提供的节点...", contextType.getSimpleName(), getDagName(), nodes.size());
+        Set<String> registeredNames = new HashSet<>(); // 用于检测重复名称
+
         for (DagNode<C, ?, ?> node : nodes) {
             String nodeName = node.getName();
             Class<?> payloadType = node.getPayloadType();
             Class<?> eventType = node.getEventType();
 
+            // 基础验证
             if (nodeName == null || nodeName.trim().isEmpty()) {
-                String errorMsg = String.format("[%s] DAG '%s': 检测到未命名节点 (实现类: %s)。节点必须有名称。",
-                        contextType.getSimpleName(), getDagName(), node.getClass().getName());
-                log.error(errorMsg);
-                throw new IllegalStateException(errorMsg);
+                throw new IllegalStateException(String.format("[%s] DAG '%s': 检测到未命名节点 (实现类: %s)。节点必须有名称。",
+                        contextType.getSimpleName(), getDagName(), node.getClass().getName()));
             }
             if (payloadType == null) {
-                String errorMsg = String.format("[%s] DAG '%s': 节点 '%s' (实现类: %s) 未提供有效的 Payload 类型 (getPayloadType() 返回 null)。",
-                        contextType.getSimpleName(), getDagName(), nodeName, node.getClass().getName());
-                log.error(errorMsg);
-                throw new IllegalStateException(errorMsg);
+                throw new IllegalStateException(String.format("[%s] DAG '%s': 节点 '%s' (实现类: %s) 未提供有效的 Payload 类型 (getPayloadType() 返回 null)。",
+                        contextType.getSimpleName(), getDagName(), nodeName, node.getClass().getName()));
             }
             if (eventType == null) {
-                String errorMsg = String.format("[%s] DAG '%s': 节点 '%s' (实现类: %s) 未提供有效的 Event 类型 (getEventType() 返回 null)。",
-                        contextType.getSimpleName(), getDagName(), nodeName, node.getClass().getName());
-                log.error(errorMsg);
-                throw new IllegalStateException(errorMsg);
+                throw new IllegalStateException(String.format("[%s] DAG '%s': 节点 '%s' (实现类: %s) 未提供有效的 Event 类型 (getEventType() 返回 null)。",
+                        contextType.getSimpleName(), getDagName(), nodeName, node.getClass().getName()));
             }
-            if (nodesByName.containsKey(nodeName)) {
-                DagNode<C, ?, ?> existingNode = nodesByName.get(nodeName);
-                String errorMsg = String.format(
-                        "[%s] DAG '%s': 节点名称冲突！名称 '%s' 已被节点 '%s' (类: %s) 使用，不能再被节点 '%s' (类: %s) 使用。节点名称在 DAG 中必须唯一。",
+
+            // 检查名称冲突
+            if (!registeredNames.add(nodeName)) { // Set.add 返回 false 如果元素已存在
+                DagNode<C, ?, ?> existingNode = nodesByName.get(nodeName); // 获取已存在的节点信息
+                String existingNodeClass = (existingNode != null) ? existingNode.getClass().getName() : "未知";
+                throw new IllegalStateException(String.format(
+                        "[%s] DAG '%s': 节点名称冲突！名称 '%s' 已被节点 (类: %s) 使用，不能再被节点 (类: %s) 使用。节点名称在 DAG 中必须唯一。",
                         contextType.getSimpleName(), getDagName(), nodeName,
-                        existingNode.getName(),
-                        existingNode.getClass().getName(),
-                        node.getName(),
+                        existingNodeClass,
                         node.getClass().getName()
-                );
-                log.error(errorMsg);
-                throw new IllegalStateException(errorMsg);
+                ));
             }
 
             nodesByName.put(nodeName, node);
@@ -495,23 +513,28 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         log.info("[{}] DAG '{}' 节点注册完成，共 {} 个唯一名称的节点", contextType.getSimpleName(), getDagName(), nodesByName.size());
     }
 
+    // printDagStructure 和 generateDotGraph 基本不变，但可以更新以更好地区分执行依赖和输入映射
     private void printDagStructure() {
-        if (!log.isInfoEnabled() || nodesByName.isEmpty()) return;
+        if (!log.isInfoEnabled() || !initialized || nodesByName.isEmpty()) return; // 确保已初始化
 
         log.info("[{}] DAG '{}' 结构表示 (基于执行依赖和输入映射):", contextType.getSimpleName(), getDagName());
         StringBuilder builder = new StringBuilder("\n");
         builder.append(String.format("%-35s | %-30s | %-50s | %-50s | %-60s\n",
-                "节点 (Payload, Event)", "实现类", "执行前驱", "执行后继", "输入映射 (需求 -> 源节点)"));
+                "节点 (Payload, Event)", "实现类", "执行前驱", "执行后继", "输入映射 (需求 -> 配置的源节点)"));
         StringBuilder divider = new StringBuilder();
         for (int i = 0; i < 230; i++) divider.append("-");
         builder.append(divider).append("\n");
 
-        List<String> nodesToIterate = this.executionOrder.isEmpty() ?
-                new ArrayList<>(nodesByName.keySet()) : this.executionOrder;
-        Collections.sort(nodesToIterate);
+        // 使用执行顺序迭代，如果可用
+        List<String> nodesToIterate = this.executionOrder;
+        if (nodesToIterate.isEmpty()) { // 如果执行顺序为空（例如初始化失败），则按名称排序
+            nodesToIterate = new ArrayList<>(nodesByName.keySet());
+            Collections.sort(nodesToIterate);
+        }
+
 
         if (nodesToIterate.isEmpty()) {
-            builder.append("  (DAG 为空)\n");
+            builder.append("  (DAG 为空或未成功初始化)\n");
         } else {
             for (String nodeName : nodesToIterate) {
                 DagNode<C, ?, ?> node = nodesByName.get(nodeName);
@@ -521,9 +544,9 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
                         node.getPayloadType().getSimpleName(), node.getEventType().getSimpleName());
                 String implClass = node.getClass().getSimpleName();
                 String predecessorsStr = formatNodeSet(executionPredecessors.getOrDefault(nodeName, Collections.emptySet()));
-                String successorsStr = formatNodeSet(new HashSet<>(executionAdjacencyList.getOrDefault(nodeName, Collections.emptyList()))); // 转 Set 去重再格式化
+                String successorsStr = formatNodeSet(executionSuccessors.getOrDefault(nodeName, Collections.emptySet()));
 
-                // 格式化输入映射
+                // 格式化输入映射 (显示配置的源)
                 Map<InputRequirement<?>, String> mappings = inputMappings.getOrDefault(nodeName, Collections.emptyMap());
                 String mappingsStr;
                 if (mappings.isEmpty()) {
@@ -540,25 +563,25 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         }
 
         if (!executionOrder.isEmpty()) {
-            builder.append("\n执行路径 (→ 表示执行顺序):\n");
-            builder.append(String.join(" → ", executionOrder));
+            builder.append("\n计算出的执行顺序 (拓扑排序):\n");
+            builder.append(String.join(" -> ", executionOrder));
         } else if (!nodesByName.isEmpty()) {
-            builder.append("\n(无有效执行路径 - 可能存在循环、节点不可达或未初始化)\n");
+            builder.append("\n(无有效执行顺序 - DAG 未成功初始化)\n");
         }
 
         log.info(builder.toString());
     }
 
     private void generateDotGraph() {
-        if (!log.isInfoEnabled() || nodesByName.isEmpty()) return;
+        if (!log.isInfoEnabled() || !initialized || nodesByName.isEmpty()) return; // 确保已初始化
 
         StringBuilder dotGraph = new StringBuilder();
         String graphName = String.format("DAG_%s_%s", contextType.getSimpleName(), getDagName().replaceAll("\\W+", "_"));
         dotGraph.append(String.format("digraph %s {\n", graphName));
-        dotGraph.append(String.format("  label=\"DAG Structure (%s - %s) - Execution & Input Mapping\";\n", contextType.getSimpleName(), getDagName()));
+        dotGraph.append(String.format("  label=\"DAG Structure (%s - %s) - Execution (solid) & Input Mapping (dashed)\";\n", contextType.getSimpleName(), getDagName()));
         dotGraph.append("  labelloc=top;\n");
         dotGraph.append("  fontsize=16;\n");
-        dotGraph.append("  rankdir=LR;\n");
+        dotGraph.append("  rankdir=LR; // Left to Right layout\n");
         dotGraph.append("  node [shape=record, style=\"rounded,filled\", fillcolor=\"lightblue\", fontname=\"Arial\", fontsize=10];\n");
         dotGraph.append("  edge [fontname=\"Arial\", fontsize=9];\n\n");
 
@@ -567,42 +590,52 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             DagNode<C, ?, ?> node = nodesByName.get(nodeName);
             if (node == null) continue;
             List<InputRequirement<?>> inputs = node.getInputRequirements();
-            String inputLabel = inputs.isEmpty() ? "" : inputs.stream()
+            String inputLabel = inputs.isEmpty() ? "(none)" : inputs.stream()
                     .map(InputRequirement::toString)
-                    .collect(Collectors.joining("\\n"));
+                    .collect(Collectors.joining("\\n")); // Use \\n for newline in DOT label
 
-            String label = String.format("{%s | {Payload: %s | Event: %s} | {Inputs:\\n%s}}",
+            // 使用 HTML-like label 以获得更好的格式控制
+            String label = String.format("< <TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\" CELLPADDING=\"4\">" +
+                            "<TR><TD COLSPAN=\"2\" BGCOLOR=\"lightblue\">%s</TD></TR>" +
+                            "<TR><TD>Payload</TD><TD>%s</TD></TR>" +
+                            "<TR><TD>Event</TD><TD>%s</TD></TR>" +
+                            "<TR><TD>Inputs</TD><TD ALIGN=\"LEFT\">%s</TD></TR>" + // ALIGN="LEFT" for input list
+                            "</TABLE> >",
                     nodeName,
                     node.getPayloadType().getSimpleName(),
                     node.getEventType().getSimpleName(),
-                    inputLabel.isEmpty() ? " (none)" : inputLabel);
-            dotGraph.append(String.format("  \"%s\" [label=\"%s\"];\n", nodeName, label));
+                    inputLabel.replace("\n", "<BR/>")); // Replace newline with HTML break
+            dotGraph.append(String.format("  \"%s\" [shape=plain, label=%s];\n", nodeName, label)); // Use shape=plain for HTML labels
         }
         dotGraph.append("\n");
 
-        // 执行依赖边 (实线)
-        dotGraph.append("  // Execution Edges\n");
-        for (Map.Entry<String, List<String>> entry : executionAdjacencyList.entrySet()) {
+        // 执行依赖边 (实线, 黑色)
+        dotGraph.append("  // Execution Edges (Solid, Black)\n");
+        for (Map.Entry<String, Set<String>> entry : executionSuccessors.entrySet()) { // Use successors map
             String source = entry.getKey();
             for (String target : entry.getValue()) {
-                dotGraph.append(String.format("  \"%s\" -> \"%s\" [style=solid, color=black];\n", source, target));
+                dotGraph.append(String.format("  \"%s\" -> \"%s\" [style=solid, color=black, arrowhead=normal];\n", source, target));
             }
         }
         dotGraph.append("\n");
 
-        // 输入映射边 (虚线，带标签)
-        dotGraph.append("  // Input Mapping Edges\n");
+        // 输入映射边 (虚线, 蓝色, 带标签)
+        dotGraph.append("  // Input Mapping Edges (Dashed, Blue)\n");
         for (Map.Entry<String, Map<InputRequirement<?>, String>> targetEntry : inputMappings.entrySet()) {
             String target = targetEntry.getKey();
             for (Map.Entry<InputRequirement<?>, String> mappingEntry : targetEntry.getValue().entrySet()) {
                 InputRequirement<?> req = mappingEntry.getKey();
                 String source = mappingEntry.getValue();
-                String edgeLabel = String.format("req: %s\\n(type: %s%s)",
-                        req.getQualifier().orElse("(default)"),
-                        req.getType().getSimpleName(),
-                        req.isOptional() ? ", opt" : "");
-                dotGraph.append(String.format("  \"%s\" -> \"%s\" [style=dashed, color=blue, label=\"%s\"];\n",
-                        source, target, edgeLabel));
+                // 确保源和目标都存在
+                if (nodesByName.containsKey(source) && nodesByName.containsKey(target)) {
+                    String edgeLabel = String.format("req: %s\\n(type: %s%s)",
+                            req.getQualifier().map(q -> "'" + q + "'").orElse("(default)"),
+                            req.getType().getSimpleName(),
+                            req.isOptional() ? ", opt" : "");
+                    // 使用不同的箭头或约束来区分数据流？暂时只用虚线和颜色
+                    dotGraph.append(String.format("  \"%s\" -> \"%s\" [style=dashed, color=blue, label=\"%s\", constraint=false, arrowhead=open];\n",
+                            source, target, edgeLabel)); // constraint=false 避免影响布局
+                }
             }
         }
 

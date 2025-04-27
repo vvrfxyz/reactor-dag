@@ -62,7 +62,7 @@ public interface Event<T> {
     static <D> Event<D> of(String eventType, D data) {
         return new SimpleEvent<>(
                 Objects.requireNonNull(eventType, "事件类型不能为空"),
-                UUID.randomUUID().toString(), // 自动生成 ID
+                UUID.randomUUID().toString(),
                 data,
                 null);
     }
@@ -178,10 +178,9 @@ public interface Event<T> {
         private final T data;
         private final String comment;
 
-        // 构造函数设为包私有或私有，强制使用工厂方法或 Builder
         SimpleEvent(String eventType, String id, T data, String comment) {
-            this.eventType = eventType; // 已在工厂/Builder中校验非空
-            this.id = id;             // 已在工厂/Builder中校验非空
+            this.eventType = eventType;
+            this.id = id;
             this.data = data;
             this.comment = comment;
         }

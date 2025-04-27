@@ -100,6 +100,7 @@ public interface DagDefinition<C> {
 
     /**
      * 获取指定节点的输入映射配置。
+     * **注意**：此映射仅表示配置时指定的源，运行时数据获取可能来自间接依赖。
      * @param nodeName 节点名称
      * @return 该节点的输入映射 (InputRequirement -> sourceNodeName)，如果无映射则为空 Map。
      */
@@ -111,4 +112,11 @@ public interface DagDefinition<C> {
      * @return 前驱节点名称集合，如果无前驱则为空 Set。
      */
     Set<String> getExecutionPredecessors(String nodeName);
+
+    /**
+     * 获取指定节点的直接执行后继节点名称集合。
+     * @param nodeName 节点名称
+     * @return 后继节点名称集合，如果无后继则为空 Set。
+     */
+    Set<String> getExecutionSuccessors(String nodeName); // 新增方法
 }

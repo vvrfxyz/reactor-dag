@@ -3,7 +3,7 @@ package xyz.vvrf.reactor.dag.builder;
 import lombok.extern.slf4j.Slf4j;
 import xyz.vvrf.reactor.dag.core.DagNode;
 import xyz.vvrf.reactor.dag.core.InputRequirement;
-import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition;
+import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition; // 确保引入正确
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -64,13 +64,14 @@ public class ChainBuilder<C> {
         log.debug("[{}] DAG '{}': Builder 定义节点 '{}' 执行依赖于: {}",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
                 targetNodeName, sources.isEmpty() ? "<无>" : sources);
-        executionDependencies.put(targetNodeName, sources);
+        executionDependencies.put(targetNodeName, Collections.unmodifiableList(new ArrayList<>(sources))); // Use unmodifiable list
         return this;
     }
 
     /**
      * 定义一个输入数据映射 (无限定符)。
      * 指明 `targetNodeName` 需要的类型为 `inputType` 的输入，由 `sourceNodeName` 提供。
+     * **注意**: 这里仅定义映射关系，运行时数据获取不强制要求 `sourceNodeName` 是直接前驱。
      *
      * @param <T>            输入类型
      * @param targetNodeName 目标节点名称
@@ -86,6 +87,7 @@ public class ChainBuilder<C> {
     /**
      * 定义一个输入数据映射 (带限定符)。
      * 指明 `targetNodeName` 需要的类型为 `inputType` 且限定符为 `qualifier` 的输入，由 `sourceNodeName` 提供。
+     * **注意**: 这里仅定义映射关系，运行时数据获取不强制要求 `sourceNodeName` 是直接前驱。
      *
      * @param <T>            输入类型
      * @param targetNodeName 目标节点名称
@@ -102,6 +104,7 @@ public class ChainBuilder<C> {
 
     /**
      * 定义一个输入数据映射 (使用 InputRequirement 对象)。
+     * **注意**: 这里仅定义映射关系，运行时数据获取不强制要求 `sourceNodeName` 是直接前驱。
      *
      * @param <T>            输入类型
      * @param targetNodeName 目标节点名称
@@ -112,11 +115,8 @@ public class ChainBuilder<C> {
      */
     public <T> ChainBuilder<C> mapInput(String targetNodeName, InputRequirement<T> requirement, String sourceNodeName) {
         Objects.requireNonNull(requirement, "InputRequirement cannot be null");
-        // 重新创建一个非 optional 的 requirement 用于映射 key，因为映射本身是显式的
-        InputRequirement<T> mappingKey = requirement.getQualifier()
-                .map(q -> InputRequirement.require(requirement.getType(), q))
-                .orElseGet(() -> InputRequirement.require(requirement.getType()));
-        return mapInputInternal(targetNodeName, mappingKey, sourceNodeName);
+        // 使用 requirement 本身作为 key，包括 optional 标志，因为 InputRequirement 的 equals/hashCode 已调整
+        return mapInputInternal(targetNodeName, requirement, sourceNodeName);
     }
 
     // 内部映射逻辑
@@ -131,8 +131,8 @@ public class ChainBuilder<C> {
         // 验证源节点是否能提供所需类型
         Class<?> sourceOutputType = sourceNode.getPayloadType();
         if (!requirement.getType().isAssignableFrom(sourceOutputType)) {
-            String errorMsg = String.format("输入映射错误：源节点 '%s' (输出 %s) 不能满足目标节点 '%s' 对类型 '%s' 的输入需求。",
-                    sourceNodeName, sourceOutputType.getSimpleName(), targetNodeName, requirement.getType().getSimpleName());
+            String errorMsg = String.format("输入映射错误：源节点 '%s' (输出 %s) 不能满足目标节点 '%s' 对类型 '%s' 的输入需求 %s。",
+                    sourceNodeName, sourceOutputType.getSimpleName(), targetNodeName, requirement.getType().getSimpleName(), requirement);
             log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
             throw new IllegalArgumentException(errorMsg);
         }
@@ -179,7 +179,7 @@ public class ChainBuilder<C> {
         // 1. 应用执行依赖
         log.info("[{}] DAG '{}': 应用 {} 个节点的执行依赖...",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), executionDependencies.size());
-        dagDefinition.setExecutionDependencies(executionDependencies); // 假设 Definition 有此方法
+        dagDefinition.setExecutionDependencies(executionDependencies);
         log.info("[{}] DAG '{}': 执行依赖应用完成。",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
 
@@ -187,7 +187,7 @@ public class ChainBuilder<C> {
         // 2. 应用输入映射
         log.info("[{}] DAG '{}': 应用 {} 个节点的输入映射...",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), inputMappings.size());
-        dagDefinition.setInputMappings(inputMappings); // 假设 Definition 有此方法
+        dagDefinition.setInputMappings(inputMappings);
         log.info("[{}] DAG '{}': 输入映射应用完成。",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
 

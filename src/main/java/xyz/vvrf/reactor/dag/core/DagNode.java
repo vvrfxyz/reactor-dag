@@ -48,6 +48,7 @@ public interface DagNode<C, P, T> {
      *
      * @param context      当前上下文对象
      * @param dependencies 依赖节点的执行结果访问器 (基于类型/限定符)。
+     *                     此访问器现在可以访问所有已完成的上游节点结果，不仅仅是直接前驱。
      * @return 如果节点应该执行，则返回 true；否则返回 false。
      */
     default boolean shouldExecute(C context, InputDependencyAccessor<C> dependencies) {
@@ -79,7 +80,7 @@ public interface DagNode<C, P, T> {
 
     /**
      * 声明此节点执行所需的输入数据。
-     * 框架将根据 DAG 配置来满足这些需求。
+     * 框架将根据 DAG 配置和已完成节点的结果来满足这些需求。
      *
      * @return 输入需求列表 (默认为空)
      */
@@ -92,6 +93,7 @@ public interface DagNode<C, P, T> {
      *
      * @param context      上下文对象
      * @param dependencies 依赖节点的执行结果访问器，用于安全地获取上游节点的产物 (基于类型/限定符)。
+     *                     此访问器现在可以访问所有已完成的上游节点结果，不仅仅是直接前驱。
      * @return 包含执行结果 (Payload 和/或 Events) 的 Mono
      */
     Mono<NodeResult<C, P, T>> execute(C context, InputDependencyAccessor<C> dependencies);

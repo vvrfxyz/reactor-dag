@@ -75,7 +75,6 @@ public final class InputRequirement<T> {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         InputRequirement<?> that = (InputRequirement<?>) o;
-        // Optional 字段比较时要注意 null
         return type.equals(that.type) && Objects.equals(qualifier, that.qualifier);
     }
 

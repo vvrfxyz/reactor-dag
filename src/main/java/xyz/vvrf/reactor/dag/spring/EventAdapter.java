@@ -32,9 +32,9 @@ public final class EventAdapter {
                 builder.event(event.getEventType());
             }
 
-            if (event.getId() != null) {
-                builder.id(event.getId());
-            }
+//            if (event.getId() != null) {
+//                builder.id(event.getId());
+//            }
 
             if (event.getComment() != null) {
                 builder.comment(event.getComment());
