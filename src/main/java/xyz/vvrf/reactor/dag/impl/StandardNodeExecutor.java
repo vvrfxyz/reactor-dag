@@ -27,7 +27,6 @@ public class StandardNodeExecutor {
     private final Scheduler nodeExecutionScheduler;
     private final List<DagMonitorListener> monitorListeners;
 
-    // ... (构造函数不变) ...
     public StandardNodeExecutor(Duration defaultNodeTimeout,
                                 Scheduler nodeExecutionScheduler,
                                 List<DagMonitorListener> monitorListeners) {
@@ -178,10 +177,14 @@ public class StandardNodeExecutor {
                         log.warn("[RequestId: {}] DAG '{}': 节点 '{}' 执行尝试失败 (非超时): {}", requestId, dagName, nodeName, error.getMessage());
                     }
                 })
-                .onErrorResume(error -> { // 统一错误处理
+                .onErrorResume(error -> {
                     Instant endTime = Instant.now();
                     Duration totalDuration = Duration.between(nodeProcessingStartTime, endTime);
-                    Duration logicDuration = Duration.between(logicStartTime, endTime); // 结束时间 - execute开始时间
+                    Duration logicDuration = Duration.between(logicStartTime, endTime);
+
+                    NodeResult<C, Object, Object> failureResult = NodeResult.failureForNode(
+                            context, error, Object.class, Object.class, nodeName
+                    );
 
                     if (error instanceof TimeoutException) {
                         log.warn("[RequestId: {}] DAG '{}': 节点 '{}' 执行最终超时 ({}).", requestId, dagName, nodeName, timeout);
@@ -189,10 +192,9 @@ public class StandardNodeExecutor {
                     } else {
                         log.error("[RequestId: {}] DAG '{}': 节点 '{}' 执行最终失败: {}",
                                 requestId, dagName, nodeName, error.getMessage(), error);
+                        safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, logicDuration, error, node));
                     }
 
-                    NodeResult<C, ?, ?> failureResult = NodeResult.failure(context, error, node);
-                    safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, logicDuration, error, node));
                     return Mono.just(failureResult);
                 })
                 .map(result -> (NodeResult<C, ?, ?>) result); // 转回通配符类型
