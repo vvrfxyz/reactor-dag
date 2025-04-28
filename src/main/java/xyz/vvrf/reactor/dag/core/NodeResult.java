@@ -1,6 +1,7 @@
 package xyz.vvrf.reactor.dag.core;
 
 import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 
 import java.util.Objects;
@@ -14,6 +15,7 @@ import java.util.Optional;
  * @param <T> 结果事件数据类型 (Event Data Type)
  * @author ruifeng.wen
  */
+@Slf4j
 public final class NodeResult<C, P, T> {
 
     public enum NodeStatus {
@@ -49,7 +51,7 @@ public final class NodeResult<C, P, T> {
     @Getter
     private final NodeStatus status;
 
-    @Getter // 新增：记录产生此结果的节点名称
+    @Getter
     private final String nodeName;
 
     /**
@@ -152,12 +154,90 @@ public final class NodeResult<C, P, T> {
         return new NodeResult<>(node.getName(), context, Optional.empty(), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SKIPPED); // 设置 SKIPPED
     }
 
-    // --- 移除显式提供类型的工厂方法（为简化起见，强制使用 DagNode 推断） ---
-    // public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Class<P> payloadType, Class<T> eventType) { ... }
-    // public static <C, P, T> NodeResult<C, P, T> success(C context, Flux<Event<T>> events, Class<P> payloadType, Class<T> eventType) { ... }
-    // public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Flux<Event<T>> events, Class<P> payloadType, Class<T> eventType) { ... }
-    // public static <C, P, T> NodeResult<C, P, T> failure(C context, Throwable error, Class<P> payloadType, Class<T> eventType) { ... }
-    // public static <C, P, T> NodeResult<C, P, T> skipped(C context, Class<P> payloadType, Class<T> eventType) { ... }
+    /**
+     * 创建一个失败的节点结果，当无法获取 DagNode 实例时使用（例如配置错误）。
+     *
+     * @param nodeName    节点名称
+     * @param context     上下文对象
+     * @param error       执行过程中发生的错误 (不能为空)
+     * @param payloadType 预期的 Payload 类型
+     * @param eventType   预期的 Event 类型
+     * @return NodeResult 实例
+     */
+    public static <C, P, T> NodeResult<C, P, T> failureForNode(C context, Throwable error, Class<P> payloadType, Class<T> eventType, String nodeName) {
+        Objects.requireNonNull(error, "错误对象不能为空");
+        Objects.requireNonNull(nodeName, "Node name cannot be null");
+        Objects.requireNonNull(payloadType, "Payload 类型不能为空");
+        Objects.requireNonNull(eventType, "Event 类型不能为空");
+        // 注意：这里 payload 和 events 都是空的
+        return new NodeResult<>(nodeName, context, Optional.empty(), Flux.empty(), error, payloadType, eventType, NodeStatus.FAILURE);
+    }
+
+    public static <C> NodeResult<C, ?, ?> createFailureResult(C context, Throwable error, DagNode<C, ?, ?> node) {
+        Objects.requireNonNull(error, "Error cannot be null for failure result");
+        Objects.requireNonNull(node, "DagNode cannot be null for failure result");
+        // 调用静态的 callNodeResultFactory
+        return callNodeResultFactory(context, node, (ctx, typedNode) -> NodeResult.failure(ctx, error, typedNode));
+    }
+
+    /**
+     * 辅助方法创建 Skipped NodeResult (使用已知节点实例) - 静态版本
+     */
+    public static <C> NodeResult<C, ?, ?> createSkippedResult(C context, DagNode<C, ?, ?> node) {
+        Objects.requireNonNull(node, "DagNode cannot be null for skipped result");
+        // 调用静态的 callNodeResultFactory
+        return callNodeResultFactory(context, node, NodeResult::skipped);
+    }
+
+    /**
+     * NodeResult 工厂方法的函数式接口定义 - 静态版本
+     */
+    @FunctionalInterface
+    private static interface NodeResultFactory<C, N extends DagNode<C, P, T>, P, T> {
+        NodeResult<C, P, T> create(C context, N node);
+    }
+
+    /**
+     * 通用辅助方法，用于调用需要特定类型 DagNode<C, P, T> 的 NodeResult 静态工厂方法 - 静态版本
+     */
+    @SuppressWarnings("unchecked")
+    private static <C, P, T> NodeResult<C, ?, ?> callNodeResultFactory(
+            C context,
+            DagNode<C, ?, ?> node,
+            NodeResultFactory<C, DagNode<C, P, T>, P, T> factory
+    ) {
+        Objects.requireNonNull(node, "DagNode cannot be null in callNodeResultFactory");
+        Objects.requireNonNull(factory, "NodeResultFactory cannot be null");
+
+        try {
+            DagNode<C, P, T> typedNode = (DagNode<C, P, T>) node;
+            return factory.create(context, typedNode);
+        } catch (ClassCastException e) {
+            // log 是静态的，可以直接在静态方法中使用
+            log.error("Internal error: Failed to cast DagNode '{}' to expected generic type for NodeResult factory. Error: {}",
+                    node.getName(), e.getMessage(), e);
+
+            IllegalStateException internalError = new IllegalStateException(
+                    "Internal type casting error during NodeResult creation for node '" + node.getName() + "'", e);
+
+            try {
+                @SuppressWarnings("unchecked")
+                Class<P> payloadType = (Class<P>) node.getPayloadType();
+                @SuppressWarnings("unchecked")
+                Class<T> eventType = (Class<T>) node.getEventType();
+                // 调用 NodeResult 的静态工厂方法
+                return NodeResult.failureForNode(context, internalError, payloadType, eventType, node.getName());
+
+            } catch (ClassCastException typeCastEx) {
+                log.error("Critical internal error: Failed to cast Class objects obtained from DagNode '{}' for fallback failure result. Error: {}",
+                        node.getName(), typeCastEx.getMessage(), typeCastEx);
+                IllegalStateException criticalError = new IllegalStateException(
+                        "Critical internal type casting error (Class objects) for node '" + node.getName() + "'", typeCastEx);
+                // 调用 NodeResult 的静态工厂方法
+                return NodeResult.failureForNode(context, criticalError, (Class<P>)Object.class, (Class<T>)Object.class, node.getName());
+            }
+        }
+    }
 
 
     /**
