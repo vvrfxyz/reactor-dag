@@ -274,25 +274,6 @@ public final class NodeResult<C, P, T> {
                 .build();
     }
 
-
-    /**
-     * 创建一个失败的节点结果。
-     *
-     * @param context 上下文
-     * @param error   发生的错误 (不能为空)
-     * @param node    尝试执行并失败的 DagNode 实例 (可以是 DagNode<C, ?, ?>)
-     * @return NodeResult 实例 (状态: FAILURE)
-     */
-    public static <C> NodeResult<C, ?, ?> failure(C context, Throwable error, DagNode<C, ?, ?> node) {
-        Objects.requireNonNull(error, "Error cannot be null for failure result");
-        // 使用 builder(context, node) 来安全地获取类型和名称
-        // 注意：这里返回 NodeResult<C, ?, ?> 是因为 P 和 T 的具体类型是从 node 推断的，调用者可能不知道
-        // 如果调用者知道 P 和 T，可以使用显式类型的 builder
-        return NodeResult.builder(context, node) // builder 会推断 P 和 T
-                .failure(error) // failure() 内部会设置状态、错误并清空 payload/events
-                .build();
-    }
-
     /**
      * 创建一个失败的节点结果，当无法获取 DagNode 实例时使用（例如配置错误）。
      *
