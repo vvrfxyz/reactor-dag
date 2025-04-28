@@ -310,6 +310,27 @@ public final class NodeResult<C, P, T> {
                 .build();
     }
 
+    /**
+     * 创建一个失败的节点结果，当可以提供类型明确的 DagNode 时使用。
+     * 返回类型具有正确的 P 和 T 泛型。
+     *
+     * @param <C> 上下文类型
+     * @param <P> Payload 类型
+     * @param <T> Event 数据类型
+     * @param context 上下文
+     * @param error   发生的错误 (不能为空)
+     * @param node    尝试执行并失败的 DagNode<C, P, T> 实例 (类型必须匹配, 不能为空)
+     * @return NodeResult<C, P, T> 实例 (状态: FAILURE)
+     */
+    public static <C, P, T> NodeResult<C, P, T> failure(C context, Throwable error, DagNode<C, P, T> node) {
+        Objects.requireNonNull(error, "Error cannot be null for failure result");
+        Objects.requireNonNull(node, "Node cannot be null for failure result");
+        // 因为 node 的类型是 DagNode<C, P, T>，builder 可以正确推断类型
+        return NodeResult.<C, P, T>builder(context, node)
+                .failure(error)
+                .build();
+    }
+
 
     /**
      * 创建一个表示节点被跳过的结果。
