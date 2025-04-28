@@ -238,7 +238,7 @@ public class StandardDagEngine {
                                     log.error("[RequestId: {}] DAG '{}': 节点 '{}' 核心逻辑 Mono 失败: {}",
                                             requestId, dagDefinition.getDagName(), nodeName, error.getMessage(), error);
                                     // 创建失败结果并放入 Map (如果尚未存在)
-                                    NodeResult<C, ?, ?> failureResult = NodeResult.createFailureResult(context, error, node); // 使用 Executor 的方法
+                                    NodeResult<C, ?, ?> failureResult = NodeResult.failure(context, error, node); // 使用 Executor 的方法
                                     completedResultsMap.putIfAbsent(nodeName, failureResult);
                                 })
                                 // 确保即使发生错误，也返回一个包含结果的 Mono，并将结果放入 Map
@@ -247,7 +247,7 @@ public class StandardDagEngine {
                                             requestId, dagDefinition.getDagName(), nodeName);
                                     // 再次尝试创建失败结果并放入 Map
                                     NodeResult<C, ?, ?> failureResult = completedResultsMap.computeIfAbsent(nodeName, k ->
-                                            NodeResult.createFailureResult(context, error, node)); // 使用 Executor 的方法
+                                            NodeResult.failure(context, error, node));
                                     return Mono.just(failureResult);
                                 });
                     })

@@ -9,13 +9,15 @@ import java.util.Optional;
 
 /**
  * 节点执行结果 - 包含上下文、可选的 Payload、事件流和可能的错误。
+ * 使用 Builder 模式创建实例。
  *
  * @param <C> 上下文类型 (Context Type)
  * @param <P> 结果 Payload 类型 (Payload Type)
- * @param <T> 结果事件数据类型 (Event Data Type)
- * @author ruifeng.wen
+ * <T> 结果事件数据类型 (Event Data Type)
+ * @author ruifeng.wen (Optimized by AI Assistant)
  */
 @Slf4j
+@Getter
 public final class NodeResult<C, P, T> {
 
     public enum NodeStatus {
@@ -31,127 +33,264 @@ public final class NodeResult<C, P, T> {
         SKIPPED
     }
 
-    @Getter
+    private final String nodeName;
     private final C context;
-
-    @Getter
     private final Optional<P> payload;
-
-    @Getter
     private final Flux<Event<T>> events;
-
     private final Throwable error;
-
-    @Getter
     private final Class<P> payloadType;
-
-    @Getter
     private final Class<T> eventType;
-
-    @Getter
     private final NodeStatus status;
 
-    @Getter
-    private final String nodeName;
+    /**
+     * 私有构造函数，请使用 Builder 创建实例。
+     */
+    private NodeResult(Builder<C, P, T> builder) {
+        this.nodeName = Objects.requireNonNull(builder.nodeName, "Node name cannot be null");
+        this.context = builder.context; // Context 可以为 null 吗？根据原代码，它不是必须的，但这里保持非 null
+        this.payload = Objects.requireNonNull(builder.payload, "Payload Optional cannot be null");
+        this.events = Objects.requireNonNull(builder.events, "Events Flux cannot be null (use Flux.empty() instead)");
+        this.error = builder.error; // Error 可以为 null
+        this.payloadType = Objects.requireNonNull(builder.payloadType, "Payload type cannot be null");
+        this.eventType = Objects.requireNonNull(builder.eventType, "Event type cannot be null");
+        this.status = Objects.requireNonNull(builder.status, "NodeStatus cannot be null");
+
+        // 校验：失败状态必须有 error，成功/跳过状态不能有 error
+        if (this.status == NodeStatus.FAILURE && this.error == null) {
+            throw new IllegalArgumentException("FAILURE status requires a non-null error for node: " + this.nodeName);
+        }
+        if ((this.status == NodeStatus.SUCCESS || this.status == NodeStatus.SKIPPED) && this.error != null) {
+            log.warn("NodeResult for node '{}' has status {} but also contains an error. Error will be ignored for status checks.",
+                    this.nodeName, this.status, this.error);
+            // 或者可以选择抛出异常，取决于业务逻辑严格性
+            // throw new IllegalArgumentException("SUCCESS/SKIPPED status cannot have an error for node: " + this.nodeName);
+        }
+        // 校验：非成功状态不应有实际的 Payload 或 Events (允许 Optional.empty() 和 Flux.empty())
+        if (this.status != NodeStatus.SUCCESS) {
+            if (this.payload.isPresent()) {
+                log.warn("NodeResult for node '{}' has status {} but contains a payload. Payload might be unexpected.",
+                        this.nodeName, this.status);
+            }
+        }
+    }
+
+    // --- Builder ---
 
     /**
-     * 私有构造函数，请使用静态工厂方法创建实例。
+     * NodeResult 的构建器。
+     *
+     * @param <C> 上下文类型
+     * @param <P> Payload 类型
+     * <T> 事件数据类型
      */
-    private NodeResult(String nodeName, C context, Optional<P> payload, Flux<Event<T>> events, Throwable error, Class<P> payloadType, Class<T> eventType, NodeStatus status) {
-        this.nodeName = Objects.requireNonNull(nodeName, "Node name cannot be null");
-        this.context = context;
-        this.payload = Objects.requireNonNull(payload, "Payload Optional 不能为 null");
-        this.events = (events != null) ? events : Flux.empty();
-        this.error = error;
-        this.payloadType = Objects.requireNonNull(payloadType, "Payload 类型不能为空");
-        this.eventType = Objects.requireNonNull(eventType, "Event 类型不能为空");
-        this.status = Objects.requireNonNull(status, "NodeStatus 不能为空");
+    public static class Builder<C, P, T> {
+        private String nodeName;
+        private C context;
+        private Optional<P> payload = Optional.empty(); // 默认为空
+        private Flux<Event<T>> events = Flux.empty();   // 默认为空 Flux
+        private Throwable error;
+        private Class<P> payloadType;
+        private Class<T> eventType;
+        private NodeStatus status;
+
+        // 私有构造函数，通过静态方法 newBuilder 获取
+        private Builder(String nodeName, C context, Class<P> payloadType, Class<T> eventType) {
+            this.nodeName = nodeName;
+            this.context = context; // 允许 context 为 null 吗？如果允许，需要调整 NodeResult 的构造函数和字段
+            this.payloadType = payloadType;
+            this.eventType = eventType;
+        }
+
+        public Builder<C, P, T> payload(P payload) {
+            this.payload = Optional.ofNullable(payload);
+            return this;
+        }
+
+        public Builder<C, P, T> events(Flux<Event<T>> events) {
+            this.events = (events != null) ? events : Flux.empty();
+            return this;
+        }
+
+        // 内部使用，设置失败状态和错误
+        private Builder<C, P, T> failure(Throwable error) {
+            this.status = NodeStatus.FAILURE;
+            this.error = Objects.requireNonNull(error, "Error cannot be null for failure status");
+            this.payload = Optional.empty(); // 失败时不应有 payload
+            this.events = Flux.empty();      // 失败时不应有 events
+            return this;
+        }
+
+        // 内部使用，设置成功状态
+        private Builder<C, P, T> success() {
+            this.status = NodeStatus.SUCCESS;
+            this.error = null; // 成功状态清除错误
+            return this;
+        }
+
+        // 内部使用，设置跳过状态
+        private Builder<C, P, T> skipped() {
+            this.status = NodeStatus.SKIPPED;
+            this.error = null;
+            this.payload = Optional.empty();
+            this.events = Flux.empty();
+            return this;
+        }
+
+        // 设置自定义状态 (谨慎使用)
+        public Builder<C, P, T> status(NodeStatus status) {
+            this.status = status;
+            // 根据状态重置 error/payload/events (可选，但推荐)
+            if (status == NodeStatus.FAILURE) {
+                if (this.error == null) throw new IllegalStateException("Cannot set status to FAILURE without providing an error first via factory method.");
+                this.payload = Optional.empty();
+                this.events = Flux.empty();
+            } else {
+                this.error = null;
+                if (status == NodeStatus.SKIPPED) {
+                    this.payload = Optional.empty();
+                    this.events = Flux.empty();
+                }
+            }
+            return this;
+        }
+
+
+        public NodeResult<C, P, T> build() {
+            // 可以在这里添加更多校验逻辑，确保 Builder 状态一致性
+            if (status == null) {
+                throw new IllegalStateException("NodeResult status must be set before building (e.g., via success(), failure(), skipped() factory methods or status())");
+            }
+            return new NodeResult<>(this);
+        }
+    }
+
+    // --- 静态工厂方法 (使用 Builder) ---
+
+    /**
+     * 创建一个 NodeResult 构建器，需要提供基础信息。
+     *
+     * @param nodeName    节点名称
+     * @param context     上下文
+     * @param payloadType Payload 类型
+     * @param eventType   Event 类型
+     * @return Builder 实例
+     */
+    public static <C, P, T> Builder<C, P, T> builder(String nodeName, C context, Class<P> payloadType, Class<T> eventType) {
+        Objects.requireNonNull(nodeName, "Node name cannot be null for builder");
+        Objects.requireNonNull(payloadType, "Payload type cannot be null for builder");
+        Objects.requireNonNull(eventType, "Event type cannot be null for builder");
+        // Context 是否允许为 null 取决于业务需求，这里假设允许
+        // Objects.requireNonNull(context, "Context cannot be null for builder");
+        return new Builder<>(nodeName, context, payloadType, eventType);
     }
 
     /**
-     * 创建一个成功的节点结果，只包含 Payload。
-     * 类型通过 DagNode 推断。
+     * 创建一个 NodeResult 构建器，从 DagNode 推断类型和名称。
+     * 这是类型安全的，避免了原始代码中的强制转换问题。
      *
-     * @param context 上下文对象
-     * @param payload 节点产出的 Payload 数据 (可以为 null)
-     * @param node    产生此结果的 DagNode 实例
-     * @return NodeResult 实例
+     * @param context 上下文
+     * @param node    DagNode 实例 (可以是 DagNode<C, ?, ?>)
+     * @return Builder 实例
      */
-    public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, DagNode<C, P, T> node) {
-        Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(node.getName(), context, Optional.ofNullable(payload), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
+    @SuppressWarnings("unchecked") // Casts from Class<?> are necessary due to generics
+    public static <C, P, T> Builder<C, P, T> builder(C context, DagNode<C, ?, ?> node) {
+        Objects.requireNonNull(node, "DagNode cannot be null for builder");
+        Class<P> pType;
+        Class<T> eType;
+        try {
+            // 从 Node 获取类型信息。这里的转换是必要的，因为 node 是 ? 类型。
+            // 如果 node.getPayloadType() 返回的不是 Class<P>，会在运行时失败，
+            // 但这比在 callNodeResultFactory 中隐藏转换要清晰。
+            pType = (Class<P>) node.getPayloadType();
+            eType = (Class<T>) node.getEventType();
+        } catch (ClassCastException e) {
+            log.error("Failed to cast types from DagNode '{}'. Expected P={}, T={}. Got P={}, T={}. Error: {}",
+                    node.getName(), "P", "T", node.getPayloadType(), node.getEventType(), e.getMessage(), e);
+            // 抛出更明确的异常，而不是尝试创建错误的 FailureResult
+            throw new IllegalArgumentException("Type mismatch when creating NodeResult builder from DagNode '" + node.getName() + "'", e);
+        }
+        return new Builder<>(node.getName(), context, pType, eType);
     }
 
     /**
      * 创建一个成功的节点结果。
-     * 类型通过 DagNode 推断。
      *
-     * @param context 上下文对象
+     * @param context 上下文
      * @param node    产生此结果的 DagNode 实例
-     * @return NodeResult 实例
+     * @return NodeResult 实例 (状态: SUCCESS)
      */
     public static <C, P, T> NodeResult<C, P, T> success(C context, DagNode<C, P, T> node) {
-        Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(node.getName(), context, Optional.empty(), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
+        return NodeResult.<C, P, T>builder(context, node)
+                .success()
+                .build();
     }
 
     /**
-     * 创建一个成功的节点结果，只包含事件流。
-     * 类型通过 DagNode 推断。
+     * 创建一个成功的节点结果，包含 Payload。
      *
-     * @param context 上下文对象
-     * @param events  节点产生的事件流 (不能为空)
+     * @param context 上下文
+     * @param payload 结果 Payload (可以为 null)
      * @param node    产生此结果的 DagNode 实例
-     * @return NodeResult 实例
+     * @return NodeResult 实例 (状态: SUCCESS)
+     */
+    public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, DagNode<C, P, T> node) {
+        return NodeResult.<C, P, T>builder(context, node)
+                .payload(payload)
+                .success()
+                .build();
+    }
+
+    /**
+     * 创建一个成功的节点结果，包含事件流。
+     *
+     * @param context 上下文
+     * @param events  事件流 (不能为空，若无事件应传入 Flux.empty())
+     * @param node    产生此结果的 DagNode 实例
+     * @return NodeResult 实例 (状态: SUCCESS)
      */
     public static <C, P, T> NodeResult<C, P, T> success(C context, Flux<Event<T>> events, DagNode<C, P, T> node) {
-        Objects.requireNonNull(events, "事件流不能为空");
-        Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(node.getName(), context, Optional.empty(), events, null, node.getPayloadType(), node.getEventType(), NodeStatus.SUCCESS);
+        Objects.requireNonNull(events, "Events Flux cannot be null for success result");
+        return NodeResult.<C, P, T>builder(context, node)
+                .events(events)
+                .success()
+                .build();
     }
 
     /**
-     * 创建一个成功的节点结果，同时包含 Payload 和事件流。
-     * 类型通过 DagNode 推断。
+     * 创建一个成功的节点结果，包含 Payload 和事件流。
      *
-     * @param context 上下文对象
-     * @param payload 节点产出的 Payload 数据 (可以为 null)
-     * @param events  节点产生的事件流 (不能为空)
+     * @param context 上下文
+     * @param payload 结果 Payload (可以为 null)
+     * @param events  事件流 (不能为空，若无事件应传入 Flux.empty())
      * @param node    产生此结果的 DagNode 实例
-     * @return NodeResult 实例
+     * @return NodeResult 实例 (状态: SUCCESS)
      */
     public static <C, P, T> NodeResult<C, P, T> success(C context, P payload, Flux<Event<T>> events, DagNode<C, P, T> node) {
-        Objects.requireNonNull(events, "事件流不能为空");
-        Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(node.getName(), context, Optional.ofNullable(payload), events, null, node.getPayloadType(), node.getEventType(),NodeStatus.SUCCESS);
+        Objects.requireNonNull(events, "Events Flux cannot be null for success result");
+        return NodeResult.<C, P, T>builder(context, node)
+                .payload(payload)
+                .events(events)
+                .success()
+                .build();
     }
+
 
     /**
      * 创建一个失败的节点结果。
-     * 类型通过 DagNode 推断。
      *
-     * @param context 上下文对象
-     * @param error   执行过程中发生的错误 (不能为空)
-     * @param node    尝试执行并失败的 DagNode 实例
-     * @return NodeResult 实例
+     * @param context 上下文
+     * @param error   发生的错误 (不能为空)
+     * @param node    尝试执行并失败的 DagNode 实例 (可以是 DagNode<C, ?, ?>)
+     * @return NodeResult 实例 (状态: FAILURE)
      */
-    public static <C, P, T> NodeResult<C, P, T> failure(C context, Throwable error, DagNode<C, P, T> node) {
-        Objects.requireNonNull(error, "错误对象不能为空");
-        Objects.requireNonNull(node, "DagNode 实例不能为空");
-        return new NodeResult<>(node.getName(), context, Optional.empty(), Flux.<Event<T>>empty(), error, node.getPayloadType(), node.getEventType(), NodeStatus.FAILURE);
-    }
-
-    /**
-     * 创建一个表示节点被跳过的结果。
-     *
-     * @param context 上下文对象
-     * @param node    被跳过的 DagNode 实例
-     * @return NodeResult 实例，状态为 SKIPPED
-     */
-    public static <C, P, T> NodeResult<C, P, T> skipped(C context, DagNode<C, P, T> node) {
-        Objects.requireNonNull(node, "DagNode 实例不能为空");
-        // 跳过的节点没有 Payload 和事件
-        return new NodeResult<>(node.getName(), context, Optional.empty(), Flux.<Event<T>>empty(), null, node.getPayloadType(), node.getEventType(), NodeStatus.SKIPPED); // 设置 SKIPPED
+    public static <C> NodeResult<C, ?, ?> failure(C context, Throwable error, DagNode<C, ?, ?> node) {
+        Objects.requireNonNull(error, "Error cannot be null for failure result");
+        // 使用 builder(context, node) 来安全地获取类型和名称
+        // 注意：这里返回 NodeResult<C, ?, ?> 是因为 P 和 T 的具体类型是从 node 推断的，调用者可能不知道
+        // 如果调用者知道 P 和 T，可以使用显式类型的 builder
+        return NodeResult.builder(context, node) // builder 会推断 P 和 T
+                .failure(error) // failure() 内部会设置状态、错误并清空 payload/events
+                .build();
     }
 
     /**
@@ -165,80 +304,28 @@ public final class NodeResult<C, P, T> {
      * @return NodeResult 实例
      */
     public static <C, P, T> NodeResult<C, P, T> failureForNode(C context, Throwable error, Class<P> payloadType, Class<T> eventType, String nodeName) {
-        Objects.requireNonNull(error, "错误对象不能为空");
-        Objects.requireNonNull(nodeName, "Node name cannot be null");
-        Objects.requireNonNull(payloadType, "Payload 类型不能为空");
-        Objects.requireNonNull(eventType, "Event 类型不能为空");
-        // 注意：这里 payload 和 events 都是空的
-        return new NodeResult<>(nodeName, context, Optional.empty(), Flux.empty(), error, payloadType, eventType, NodeStatus.FAILURE);
-    }
-
-    public static <C> NodeResult<C, ?, ?> createFailureResult(C context, Throwable error, DagNode<C, ?, ?> node) {
         Objects.requireNonNull(error, "Error cannot be null for failure result");
-        Objects.requireNonNull(node, "DagNode cannot be null for failure result");
-        // 调用静态的 callNodeResultFactory
-        return callNodeResultFactory(context, node, (ctx, typedNode) -> NodeResult.failure(ctx, error, typedNode));
+        return NodeResult.<C, P, T>builder(nodeName, context, payloadType, eventType)
+                .failure(error)
+                .build();
     }
+
 
     /**
-     * 辅助方法创建 Skipped NodeResult (使用已知节点实例) - 静态版本
+     * 创建一个表示节点被跳过的结果。
+     *
+     * @param context 上下文
+     * @param node    被跳过的 DagNode 实例 (可以是 DagNode<C, ?, ?>)
+     * @return NodeResult 实例 (状态: SKIPPED)
      */
-    public static <C> NodeResult<C, ?, ?> createSkippedResult(C context, DagNode<C, ?, ?> node) {
-        Objects.requireNonNull(node, "DagNode cannot be null for skipped result");
-        // 调用静态的 callNodeResultFactory
-        return callNodeResultFactory(context, node, NodeResult::skipped);
+    public static <C> NodeResult<C, ?, ?> skipped(C context, DagNode<C, ?, ?> node) {
+        // 使用 builder(context, node) 来安全地获取类型和名称
+        return NodeResult.builder(context, node) // builder 会推断 P 和 T
+                .skipped() // skipped() 内部会设置状态并清空 payload/events/error
+                .build();
     }
 
-    /**
-     * NodeResult 工厂方法的函数式接口定义 - 静态版本
-     */
-    @FunctionalInterface
-    private static interface NodeResultFactory<C, N extends DagNode<C, P, T>, P, T> {
-        NodeResult<C, P, T> create(C context, N node);
-    }
-
-    /**
-     * 通用辅助方法，用于调用需要特定类型 DagNode<C, P, T> 的 NodeResult 静态工厂方法 - 静态版本
-     */
-    @SuppressWarnings("unchecked")
-    private static <C, P, T> NodeResult<C, ?, ?> callNodeResultFactory(
-            C context,
-            DagNode<C, ?, ?> node,
-            NodeResultFactory<C, DagNode<C, P, T>, P, T> factory
-    ) {
-        Objects.requireNonNull(node, "DagNode cannot be null in callNodeResultFactory");
-        Objects.requireNonNull(factory, "NodeResultFactory cannot be null");
-
-        try {
-            DagNode<C, P, T> typedNode = (DagNode<C, P, T>) node;
-            return factory.create(context, typedNode);
-        } catch (ClassCastException e) {
-            // log 是静态的，可以直接在静态方法中使用
-            log.error("Internal error: Failed to cast DagNode '{}' to expected generic type for NodeResult factory. Error: {}",
-                    node.getName(), e.getMessage(), e);
-
-            IllegalStateException internalError = new IllegalStateException(
-                    "Internal type casting error during NodeResult creation for node '" + node.getName() + "'", e);
-
-            try {
-                @SuppressWarnings("unchecked")
-                Class<P> payloadType = (Class<P>) node.getPayloadType();
-                @SuppressWarnings("unchecked")
-                Class<T> eventType = (Class<T>) node.getEventType();
-                // 调用 NodeResult 的静态工厂方法
-                return NodeResult.failureForNode(context, internalError, payloadType, eventType, node.getName());
-
-            } catch (ClassCastException typeCastEx) {
-                log.error("Critical internal error: Failed to cast Class objects obtained from DagNode '{}' for fallback failure result. Error: {}",
-                        node.getName(), typeCastEx.getMessage(), typeCastEx);
-                IllegalStateException criticalError = new IllegalStateException(
-                        "Critical internal type casting error (Class objects) for node '" + node.getName() + "'", typeCastEx);
-                // 调用 NodeResult 的静态工厂方法
-                return NodeResult.failureForNode(context, criticalError, (Class<P>)Object.class, (Class<T>)Object.class, node.getName());
-            }
-        }
-    }
-
+    // --- 实例方法 ---
 
     /**
      * 获取执行过程中的错误。
@@ -273,6 +360,7 @@ public final class NodeResult<C, P, T> {
         return this.status == NodeStatus.SKIPPED;
     }
 
+    // --- equals, hashCode, toString --- (保持不变或稍作调整)
 
     @Override
     public boolean equals(Object o) {
@@ -281,7 +369,7 @@ public final class NodeResult<C, P, T> {
         NodeResult<?, ?, ?> that = (NodeResult<?, ?, ?>) o;
         // 不比较 events (Flux) 和 context
         return nodeName.equals(that.nodeName) &&
-                Objects.equals(payload, that.payload) &&
+                Objects.equals(payload, that.payload) && // Optional 的 equals 比较的是内容
                 Objects.equals(error, that.error) &&
                 payloadType.equals(that.payloadType) &&
                 eventType.equals(that.eventType) &&
@@ -290,19 +378,29 @@ public final class NodeResult<C, P, T> {
 
     @Override
     public int hashCode() {
+        // 不包含 events 和 context
         return Objects.hash(nodeName, payload, error, payloadType, eventType, status);
     }
 
     @Override
     public String toString() {
-        return "NodeResult{" +
-                "nodeName='" + nodeName + '\'' +
-                ", status=" + status +
-                ", payload=" + payload.map(Object::toString).orElse("<empty>") +
-                ", payloadType=" + payloadType.getSimpleName() +
-                ", eventType=" + eventType.getSimpleName() +
-                ", hasEvents=" + (events != Flux.<Event<T>>empty() && status == NodeStatus.SUCCESS) +
-                ", error=" + error +
-                '}';
+        StringBuilder sb = new StringBuilder("NodeResult{");
+        sb.append("nodeName='").append(nodeName).append('\'');
+        sb.append(", status=").append(status);
+        payload.ifPresent(p -> sb.append(", payload=").append(p)); // 更简洁地显示 payload
+        sb.append(", payloadType=").append(payloadType.getSimpleName());
+        sb.append(", eventType=").append(eventType.getSimpleName());
+        // 更准确地判断是否有事件，但避免订阅 Flux
+        boolean hasEvents = events != (Flux<?>)Flux.empty(); // 基础检查
+        sb.append(", hasEvents=").append(hasEvents);
+        if (error != null) {
+            sb.append(", error=").append(error);
+        }
+        // Context 通常比较复杂，可以选择不打印或只打印类名
+        // if (context != null) {
+        //     sb.append(", contextType=").append(context.getClass().getSimpleName());
+        // }
+        sb.append('}');
+        return sb.toString();
     }
 }

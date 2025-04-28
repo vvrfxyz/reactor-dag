@@ -95,7 +95,7 @@ public class StandardNodeExecutor {
                         Instant endTime = Instant.now();
                         Duration totalDuration = Duration.between(nodeProcessingStartTime, endTime);
                         Duration logicDuration = Duration.between(logicStartTime, endTime);
-                        NodeResult<C, ?, ?> failureResult = NodeResult.createFailureResult(context, e, node);
+                        NodeResult<C, ?, ?> failureResult = NodeResult.failure(context, e, node);
                         safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, logicDuration, e, node));
                         return Mono.just(failureResult);
                     }
@@ -110,7 +110,7 @@ public class StandardNodeExecutor {
                         log.info("[RequestId: {}] DAG '{}': 节点 '{}' 条件不满足，将被跳过。", requestId, dagName, nodeName);
                         Instant endTime = Instant.now();
                         Duration totalDuration = Duration.between(nodeProcessingStartTime, endTime);
-                        NodeResult<C, ?, ?> skippedResult = NodeResult.createSkippedResult(context, node);
+                        NodeResult<C, ?, ?> skippedResult = NodeResult.skipped(context, node);
                         safeNotifyListeners(l -> l.onNodeSkipped(requestId, dagName, nodeName, node));
                         return Mono.just(skippedResult);
                     }
@@ -120,7 +120,7 @@ public class StandardNodeExecutor {
                     log.error("[RequestId: {}] DAG '{}': 节点 '{}' 核心逻辑准备阶段发生意外错误: {}", requestId, dagName, nodeName, error.getMessage(), error);
                     Instant endTime = Instant.now();
                     Duration totalDuration = Duration.between(nodeProcessingStartTime, endTime);
-                    NodeResult<C, ?, ?> failureResult = NodeResult.createFailureResult(context, error, node);
+                    NodeResult<C, ?, ?> failureResult = NodeResult.failure(context, error, node);
                     safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, Duration.ZERO, error, node)); // Logic duration might be 0
                     return Mono.just(failureResult);
                 });
@@ -191,7 +191,7 @@ public class StandardNodeExecutor {
                                 requestId, dagName, nodeName, error.getMessage(), error);
                     }
 
-                    NodeResult<C, ?, ?> failureResult = NodeResult.createFailureResult(context, error, node);
+                    NodeResult<C, ?, ?> failureResult = NodeResult.failure(context, error, node);
                     safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, logicDuration, error, node));
                     return Mono.just(failureResult);
                 })
