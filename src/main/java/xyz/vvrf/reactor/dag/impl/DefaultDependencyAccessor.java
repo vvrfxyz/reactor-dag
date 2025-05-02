@@ -1,3 +1,4 @@
+// [file name]: DefaultDependencyAccessor.java
 package xyz.vvrf.reactor.dag.impl;
 
 import reactor.core.publisher.Flux;
@@ -10,43 +11,37 @@ import java.util.*;
 
 /**
  * DependencyAccessor 的默认实现。
+ * 基于存储 NodeResult 的 Map。
  *
  * @param <C> 上下文类型
- * @author ruifeng.wen
  */
 public class DefaultDependencyAccessor<C> implements DependencyAccessor<C> {
 
-    private final Map<String, NodeResult<C, ?, ?>> results;
+    private final Map<String, NodeResult<C, ?>> results;
 
     /**
      * 创建 DefaultDependencyAccessor 实例。
      * @param results 依赖节点的执行结果 Map (不能为空)
      */
-    public DefaultDependencyAccessor(Map<String, NodeResult<C, ?, ?>> results) {
+    public DefaultDependencyAccessor(Map<String, NodeResult<C, ?>> results) {
         // 允许传入空 Map，但不允许传入 null
         this.results = Objects.requireNonNull(results, "Dependency results map cannot be null");
     }
 
     @Override
-    public Optional<NodeResult<C, ?, ?>> getResult(String dependencyName) {
+    public Optional<NodeResult<C, ?>> getResult(String dependencyName) {
         return Optional.ofNullable(results.get(dependencyName));
     }
 
-    @Override
-    public <DepP> Optional<DepP> getPayload(String dependencyName, Class<DepP> expectedType) {
-        Objects.requireNonNull(expectedType, "Expected payload type cannot be null");
-        return getResult(dependencyName)
-                .filter(NodeResult::isSuccess)
-                .flatMap(NodeResult::getPayload)
-                .filter(expectedType::isInstance)
-                .map(expectedType::cast);
-    }
+    // getPayload 方法已被移除
 
     @Override
     public Flux<Event<?>> getEvents(String dependencyName) {
+        // 从 NodeResult 中获取事件流
+        // 如果节点失败或跳过，NodeResult 内部的 events 通常是 Flux.empty()
         return Mono.justOrEmpty(getResult(dependencyName))
-                .filter(NodeResult::isSuccess)
-                .flatMapMany(NodeResult::getEvents);
+                // .filter(NodeResult::isSuccess) // 是否只获取成功节点的事件？取决于需求，暂时获取所有存在的
+                .flatMapMany(NodeResult::getEvents); // 直接获取事件流
     }
 
     @Override
@@ -75,4 +70,5 @@ public class DefaultDependencyAccessor<C> implements DependencyAccessor<C> {
         return results.containsKey(dependencyName);
     }
 
+    // getError 方法已在接口中提供默认实现
 }

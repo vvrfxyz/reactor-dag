@@ -1,88 +1,98 @@
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import xyz.vvrf.reactor.dag.core.DagNode;
-import xyz.vvrf.reactor.dag.core.DependencyAccessor; // Import Accessor
-// Removed DependencyDescriptor import (not used here)
+import xyz.vvrf.reactor.dag.core.DependencyAccessor;
+import xyz.vvrf.reactor.dag.core.Event;
+import xyz.vvrf.reactor.dag.core.NodeLogic;
 import xyz.vvrf.reactor.dag.core.NodeResult;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 
+import java.util.Arrays;
 import java.util.List;
-// Removed Map import
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
  * reactor-dag
- * The final node, depends on all parallel nodes. Acts as a sync point.
- * Uses DependencyAccessor.
+ * 最终节点，依赖于所有并行节点，作为同步点。
+ * 实现 NodeLogic<ParalleContext, String>，产生包含聚合状态的 String 事件。
+ * 使用 DependencyAccessor 检查依赖状态。
  *
- * @author Your Name (modified)
- * @date Today's Date (modified)
+ * @author (你的名字) (重构)
+ * @date (当前日期)
  */
 @Component
-public class FinalNode implements DagNode<ParalleContext, String, Void> {
+@Slf4j
+public class FinalNode implements NodeLogic<ParalleContext, String> {
+
+    // 显式定义期望的依赖节点名称
+    private static final List<String> EXPECTED_DEPENDENCIES = Arrays.asList("ParallelA", "ParallelB", "ParallelC");
 
     @Override
-    public Class<String> getPayloadType() {
-        return String.class;
+    public Class<String> getEventType() {
+        return String.class; // 最终产生一个聚合结果字符串事件
     }
-
-    @Override
-    public Class<Void> getEventType() {
-        return Void.class;
-    }
-
-    // Define the names of the expected dependencies explicitly
-    private static final List<String> EXPECTED_DEPENDENCIES = List.of("ParallelNodeA", "ParallelNodeB", "ParallelNodeC");
 
     /**
-     * Executes the final node logic, aggregating results from parallel nodes.
+     * 执行最终节点逻辑，聚合来自并行节点的状态。
      *
-     * @param context      The parallel context.
-     * @param dependencies Accessor for dependency results.
-     * @return A Mono containing the final result.
+     * @param context      并行上下文。
+     * @param dependencies 依赖访问器。
+     * @return 包含最终聚合结果的 Mono。
      */
     @Override
-    public Mono<NodeResult<ParalleContext, String, Void>> execute(ParalleContext context, DependencyAccessor<ParalleContext> dependencies) { // <--- Signature changed
+    public Mono<NodeResult<ParalleContext, String>> execute(ParalleContext context, DependencyAccessor<ParalleContext> dependencies) {
         return Mono.fromCallable(() -> {
             String threadName = Thread.currentThread().getName();
-            System.out.println("Executing " + this.getClass().getSimpleName() + " on thread: " + threadName);
+            log.info("Executing {} on thread: {}", this.getClass().getSimpleName(), threadName);
 
-            // Aggregate results using the DependencyAccessor
-            String aggregatedPayloads = EXPECTED_DEPENDENCIES.stream()
+            // 使用 DependencyAccessor 聚合依赖节点的状态
+            String aggregatedStatus = EXPECTED_DEPENDENCIES.stream()
                     .map(depName -> {
-                        // Safely get payload using accessor, provide default if absent or failed
-                        String payloadStr = dependencies.getPayload(depName, String.class) // Assuming String payload
-                                .orElseGet(() -> {
-                                    // Check if the dependency actually failed vs just having no payload
-                                    boolean failed = !dependencies.isSuccess(depName);
-                                    return failed ? "FAILED" : "EMPTY";
-                                });
-                        return depName + ": [" + payloadStr + "]";
+                        String status;
+                        if (dependencies.isSuccess(depName)) {
+                            status = "SUCCESS";
+                        } else if (dependencies.isFailure(depName)) {
+                            status = "FAILURE";
+                        } else if (dependencies.isSkipped(depName)) {
+                            status = "SKIPPED";
+                        } else if (dependencies.contains(depName)) {
+                            // 存在但状态未知？理论上不太可能，除非 NodeResult 扩展了状态
+                            status = dependencies.getResult(depName).map(r -> r.getStatus().name()).orElse("UNKNOWN_STATE");
+                        } else {
+                            status = "NOT_FOUND"; // 依赖不存在？初始化时应已捕获
+                        }
+                        return depName + ": [" + status + "]";
                     })
                     .collect(Collectors.joining("; "));
 
-            System.out.println(this.getClass().getSimpleName() + " received aggregated results: " + aggregatedPayloads);
+            log.info("{} received aggregated dependency status: {}", this.getClass().getSimpleName(), aggregatedStatus);
 
-            // Simulate final processing
+            // 模拟最终处理
             try {
                 TimeUnit.MILLISECONDS.sleep(20);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return NodeResult.<ParalleContext, String, Void>failure(
-                        context, e, this);
+                log.error("Error during sleep in {}: {}", this.getClass().getSimpleName(), e.getMessage());
+                return NodeResult.failure(context, e, getEventType());
             }
 
-            String resultPayload = this.getClass().getSimpleName() + " finished successfully on " + threadName + ". Aggregated: " + aggregatedPayloads;
-            System.out.println(this.getClass().getSimpleName() + " finished.");
+            String resultData = String.format("%s finished successfully on %s. Aggregated Status: %s",
+                    this.getClass().getSimpleName(), threadName, aggregatedStatus);
+            log.info("{} finished.", this.getClass().getSimpleName());
 
-            return NodeResult.success(context, resultPayload, this);
+            // 创建成功事件
+            Event<String> finalEvent = Event.of(this.getClass().getSimpleName() + "Complete", resultData);
+
+            // 返回成功结果
+            return NodeResult.success(context, Flux.just(finalEvent), getEventType());
+
         }).onErrorResume(error -> {
-            System.err.println("Error executing " + this.getClass().getSimpleName() + ": " + error.getMessage());
-            return Mono.just(NodeResult.<ParalleContext, String, Void>failure(
-                    context, error, this));
+            log.error("Unexpected error executing {}: {}", this.getClass().getSimpleName(), error.getMessage(), error);
+            return Mono.just(NodeResult.failure(context, error, getEventType()));
         });
     }
 }

@@ -1,163 +1,230 @@
-package xyz.vvrf.reactor.dag.builder; // 可以放在一个新的包里
+// [file name]: ChainBuilder.java
+package xyz.vvrf.reactor.dag.builder;
 
 import lombok.extern.slf4j.Slf4j;
-import xyz.vvrf.reactor.dag.core.DagDefinition; // 引入接口
-import xyz.vvrf.reactor.dag.core.DagNode;
-import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
-import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition; // 引入改造后的类
-
+import xyz.vvrf.reactor.dag.core.DagNodeDefinition;
+import xyz.vvrf.reactor.dag.core.NodeLogic;
+import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition; // 依赖抽象实现添加节点定义
+import reactor.util.retry.Retry; // 引入 Retry
+import java.time.Duration; // 引入 Duration
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiPredicate; // 引入 BiPredicate
+import xyz.vvrf.reactor.dag.core.DependencyAccessor; // 引入 DependencyAccessor
 
 /**
  * DAG 链式构建器。
- * 用于以编程方式定义节点间的依赖关系，覆盖节点自身的 getDependencies()。
- * 需要配合改造后的 AbstractDagDefinition 使用，该 Definition 包含 addExplicitDependencies 方法。
+ * 用于以编程方式定义 DAG 结构，包括节点逻辑、名称、依赖关系和可选配置。
  *
- * @author ruifeng.wen
  * @param <C> 上下文类型
  */
 @Slf4j
 public class ChainBuilder<C> {
 
     private final AbstractDagDefinition<C> dagDefinition;
-    private final Map<String, List<DependencyDescriptor>> explicitDependenciesMap;
+    // 存储临时的节点配置信息，Key 是节点名称
+    private final Map<String, NodeConfig<C>> nodeConfigs = new ConcurrentHashMap<>();
+
+    // 内部类，用于暂存节点配置
+    private static class NodeConfig<C> {
+        final String nodeName;
+        final NodeLogic<C, ?> logic;
+        final List<String> dependencyNames = new ArrayList<>();
+        Retry retrySpec = null;
+        Duration timeout = null;
+        BiPredicate<C, DependencyAccessor<C>> shouldExecutePredicate = null;
+
+        NodeConfig(String nodeName, NodeLogic<C, ?> logic) {
+            this.nodeName = nodeName;
+            this.logic = logic;
+        }
+    }
 
     /**
      * 创建 ChainBuilder 实例。
      *
-     * @param dagDefinition 正在配置的 DagDefinition 实例。
-     *                      必须是 AbstractDagDefinition 的子类，且已完成节点注册。
+     * @param dagDefinition 正在配置的 DagDefinition 实例 (必须是 AbstractDagDefinition 的子类)。
      */
     public ChainBuilder(AbstractDagDefinition<C> dagDefinition) {
         this.dagDefinition = Objects.requireNonNull(dagDefinition, "DagDefinition 不能为空");
-        this.explicitDependenciesMap = new ConcurrentHashMap<>();
         log.info("[{}] DAG '{}': ChainBuilder 已创建。",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
     }
 
     /**
-     * 添加一个节点到构建器，并定义它的显式依赖。
-     * 如果一个节点被多次调用此方法，后续调用会覆盖之前的依赖设置。
+     * 定义一个 DAG 节点实例。
      *
-     * @param nodeName           要添加或配置依赖的目标节点的名称 (必须已在 DagDefinition 注册)。
-     * @param dependencyNodeNames 它所依赖的节点的名称数组。如果为空或不传，表示此节点在此链中无显式依赖。
+     * @param nodeName           节点的唯一名称。
+     * @param logic              该节点使用的 NodeLogic 实现。
+     * @param dependencyNodeNames 它所依赖的节点的名称数组。如果为空或不传，表示此节点无依赖。
      * @return 当前 ChainBuilder 实例，支持链式调用。
-     * @throws IllegalArgumentException 如果目标节点或依赖的节点未在 DagDefinition 中注册，
-     *                                或无法获取其 PayloadType。
-     * @throws NullPointerException 如果节点名称为 null。
+     * @throws NullPointerException 如果 nodeName 或 logic 为 null。
+     * @throws IllegalArgumentException 如果 nodeName 为空。
      */
-    public ChainBuilder<C> node(String nodeName, String... dependencyNodeNames) {
-        Objects.requireNonNull(nodeName, "目标节点名称不能为空");
-
-        // 确认目标节点已注册 (使用 nodeName)
-        if (!dagDefinition.getNodeAnyType(nodeName).isPresent()) {
-            String errorMsg = String.format("目标节点 '%s' 未在 DagDefinition '%s' 中注册。",
-                    nodeName, dagDefinition.getDagName());
-            log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
-            throw new IllegalArgumentException(errorMsg);
+    public ChainBuilder<C> node(String nodeName, NodeLogic<C, ?> logic, String... dependencyNodeNames) {
+        Objects.requireNonNull(nodeName, "节点名称不能为空");
+        Objects.requireNonNull(logic, "NodeLogic 实现不能为空 for node " + nodeName);
+        if (nodeName.trim().isEmpty()) {
+            throw new IllegalArgumentException("节点名称不能为空白");
         }
 
-        List<DependencyDescriptor> dependencies = new ArrayList<>();
+        NodeConfig<C> config = nodeConfigs.computeIfAbsent(nodeName, k -> new NodeConfig<>(k, logic));
+
+        // 清空旧依赖，设置新依赖
+        config.dependencyNames.clear();
         if (dependencyNodeNames != null) {
-            for (String depNodeName : dependencyNodeNames) {
-                Objects.requireNonNull(depNodeName, "依赖节点名称不能为空");
-
-                // 从 DagDefinition 中查找依赖节点实例以获取其 PayloadType (使用 depNodeName)
-                Optional<DagNode<C, ?, ?>> depNodeOpt = dagDefinition.getNodeAnyType(depNodeName);
-                if (!depNodeOpt.isPresent()) {
-                    String errorMsg = String.format("节点 '%s' 的依赖节点 '%s' 未在 DagDefinition '%s' 中注册。",
-                            nodeName, depNodeName, dagDefinition.getDagName());
-                    log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
-                    throw new IllegalArgumentException(errorMsg);
+            for(String depName : dependencyNodeNames) {
+                Objects.requireNonNull(depName, "依赖节点名称不能为空 for node " + nodeName);
+                if (depName.trim().isEmpty()) {
+                    throw new IllegalArgumentException("依赖节点名称不能为空白 for node " + nodeName);
                 }
-
-                DagNode<C, ?, ?> depNode = depNodeOpt.get();
-                Class<?> requiredType = depNode.getPayloadType();
-                if (requiredType == null) {
-                    String errorMsg = String.format("节点 '%s' 的依赖节点 '%s' (类: %s) 未提供有效的 PayloadType。",
-                            nodeName, depNodeName, depNode.getClass().getName()); // 日志中仍可包含类名
-                    log.error("[{}] {}", dagDefinition.getContextType().getSimpleName(), errorMsg);
-                    throw new IllegalArgumentException(errorMsg);
+                if (depName.equals(nodeName)) {
+                    throw new IllegalArgumentException(String.format("节点 '%s' 不能依赖自身", nodeName));
                 }
-
-                dependencies.add(new DependencyDescriptor(depNodeName, requiredType));
+                config.dependencyNames.add(depName);
             }
         }
 
-        log.debug("[{}] DAG '{}': Builder 定义节点 '{}' 依赖于: {}",
+        log.debug("[{}] DAG '{}': Builder 定义节点 '{}' (逻辑: {}) 依赖于: {}",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
-                nodeName, dependencies);
-        // *** 使用 nodeName 作为 Key ***
-        explicitDependenciesMap.put(nodeName, dependencies);
+                nodeName, logic.getLogicIdentifier(), config.dependencyNames);
+
         return this;
     }
 
     /**
-     * 构建最终的显式依赖映射。
-     * 将内部以 Class 为键的映射转换为以节点名称字符串为键的映射。
+     * 为最近定义的节点设置自定义重试策略。
+     * 会覆盖 NodeLogic 的默认重试策略。
      *
-     * @return Map<String, List<DependencyDescriptor>>，可用于调用 DagDefinition 的 addExplicitDependencies。
+     * @param nodeName  要配置的节点名称。
+     * @param retrySpec Reactor 的 Retry 规范。
+     * @return 当前 ChainBuilder 实例。
+     * @throws IllegalStateException 如果节点尚未通过 node() 方法定义。
      */
-    public Map<String, List<DependencyDescriptor>> build() {
-        Map<String, List<DependencyDescriptor>> finalDependencies = new HashMap<>();
-        for (Map.Entry<String, List<DependencyDescriptor>> entry : explicitDependenciesMap.entrySet()) {
-            String nodeName = entry.getKey();
-
-            if (dagDefinition.getNodeAnyType(nodeName).isPresent()) {
-                finalDependencies.put(nodeName, entry.getValue());
-            } else {
-                log.warn("[{}] DAG '{}': 在构建最终依赖映射时，节点 '{}' 已不再注册，其显式依赖将被忽略。",
-                        dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
-                        nodeName);
-            }
-        }
-        log.info("[{}] DAG '{}': ChainBuilder 构建完成，生成了 {} 个节点的显式依赖配置。",
-                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
-                finalDependencies.size());
-        return finalDependencies;
+    public ChainBuilder<C> withRetry(String nodeName, Retry retrySpec) {
+        NodeConfig<C> config = getNodeConfigOrThrow(nodeName);
+        config.retrySpec = retrySpec; // 允许为 null 以清除设置
+        log.debug("[{}] DAG '{}': Builder 为节点 '{}' 配置了自定义 Retry 策略。",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), nodeName);
+        return this;
     }
 
     /**
-     * 将通过此 Builder 定义的所有显式依赖应用到关联的 DagDefinition 实例。
-     * 这是调用 {@link #build()} 并手动迭代调用 {@link AbstractDagDefinition#addExplicitDependencies(String, List)} 的便捷方法。
+     * 为最近定义的节点设置自定义执行超时。
+     * 会覆盖 NodeLogic 的默认超时。
+     *
+     * @param nodeName 要配置的节点名称。
+     * @param timeout  超时时间。
+     * @return 当前 ChainBuilder 实例。
+     * @throws IllegalStateException 如果节点尚未通过 node() 方法定义。
+     * @throws NullPointerException 如果 timeout 为 null。
+     */
+    public ChainBuilder<C> withTimeout(String nodeName, Duration timeout) {
+        NodeConfig<C> config = getNodeConfigOrThrow(nodeName);
+        config.timeout = Objects.requireNonNull(timeout, "Timeout 不能为空 for node " + nodeName);
+        log.debug("[{}] DAG '{}': Builder 为节点 '{}' 配置了自定义 Timeout: {}",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), nodeName, timeout);
+        return this;
+    }
+
+    /**
+     * 为最近定义的节点设置自定义的执行条件。
+     * 会覆盖 NodeLogic 的默认 shouldExecute 行为。
+     *
+     * @param nodeName    要配置的节点名称。
+     * @param predicate   一个 BiPredicate，接收 Context 和 DependencyAccessor，返回 boolean。
+     * @return 当前 ChainBuilder 实例。
+     * @throws IllegalStateException 如果节点尚未通过 node() 方法定义。
+     * @throws NullPointerException 如果 predicate 为 null。
+     */
+    public ChainBuilder<C> when(String nodeName, BiPredicate<C, DependencyAccessor<C>> predicate) {
+        NodeConfig<C> config = getNodeConfigOrThrow(nodeName);
+        config.shouldExecutePredicate = Objects.requireNonNull(predicate, "Predicate 不能为空 for node " + nodeName);
+        log.debug("[{}] DAG '{}': Builder 为节点 '{}' 配置了自定义执行条件 (when)。",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), nodeName);
+        return this;
+    }
+
+    /**
+     * 获取节点配置，如果不存在则抛出异常。
+     */
+    private NodeConfig<C> getNodeConfigOrThrow(String nodeName) {
+        NodeConfig<C> config = nodeConfigs.get(nodeName);
+        if (config == null) {
+            throw new IllegalStateException(String.format("节点 '%s' 尚未通过 node() 方法定义，无法配置其属性。", nodeName));
+        }
+        return config;
+    }
+
+    /**
+     * 将通过此 Builder 定义的所有节点及其配置应用到关联的 DagDefinition 实例。
      * 调用此方法后，通常应接着调用 {@link AbstractDagDefinition#initialize()}。
      *
-     * @throws IllegalStateException 如果在应用依赖时发生错误（例如节点不存在）。
+     * @throws IllegalStateException 如果在应用配置时发生错误（例如依赖的节点未在 Builder 中定义）。
      */
     public void applyToDefinition() {
-        log.info("[{}] DAG '{}': 开始将 ChainBuilder 定义的显式依赖应用到 DagDefinition...",
+        log.info("[{}] DAG '{}': 开始将 ChainBuilder 定义的节点配置应用到 DagDefinition...",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
-        Map<String, List<DependencyDescriptor>> builtDependencies = this.build();
+
+        // 验证所有依赖的节点是否都已在 Builder 中定义
+        validateAllDependenciesExist();
 
         int appliedCount = 0;
-        for (Map.Entry<String, List<DependencyDescriptor>> entry : builtDependencies.entrySet()) {
+        for (NodeConfig<C> config : nodeConfigs.values()) {
             try {
-                // 调用 DagDefinition 的方法来添加依赖
-                dagDefinition.addExplicitDependencies(entry.getKey(), entry.getValue());
+                // 创建 DagNodeDefinition 实例
+                DagNodeDefinition<C, ?> nodeDefinition = new DagNodeDefinition<>(
+                        config.nodeName,
+                        config.logic,
+                        Collections.unmodifiableList(new ArrayList<>(config.dependencyNames)), // 传递不可变列表
+                        config.retrySpec,
+                        config.timeout,
+                        config.shouldExecutePredicate
+                );
+                // 调用 DagDefinition 的方法来添加节点定义
+                dagDefinition.addNodeDefinition(nodeDefinition);
                 appliedCount++;
-            } catch (IllegalArgumentException e) {
-                // addExplicitDependencies 会在节点不存在时抛出异常
-                log.error("[{}] DAG '{}': 应用节点 '{}' 的显式依赖时失败: {}",
+            } catch (Exception e) { // 捕获 addNodeDefinition 可能抛出的异常 (如重名)
+                log.error("[{}] DAG '{}': 应用节点 '{}' 的配置时失败: {}",
                         dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
-                        entry.getKey(), e.getMessage());
+                        config.nodeName, e.getMessage(), e);
                 // 重新抛出，指示应用过程失败
-                throw new IllegalStateException("Failed to apply dependency for node '" + entry.getKey() + "'", e);
+                throw new IllegalStateException("Failed to apply configuration for node '" + config.nodeName + "'", e);
             }
         }
-        log.info("[{}] DAG '{}': 成功应用了 {} 个节点的显式依赖配置到 DagDefinition。",
+        log.info("[{}] DAG '{}': 成功应用了 {} 个节点的配置到 DagDefinition。",
                 dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), appliedCount);
     }
 
     /**
-     * 添加一个没有显式依赖的节点（例如，图的起点）。
-     * 等同于调用 node(nodeName)。
-     *
-     * @param nodeName 起点节点名称。
-     * @return 当前 ChainBuilder 实例。
+     * 验证所有节点配置中声明的依赖项是否也在本 Builder 中定义了。
      */
-    public ChainBuilder<C> startWith(String nodeName) {
-        return node(nodeName);
+    private void validateAllDependenciesExist() {
+        log.debug("[{}] DAG '{}': Builder 验证所有依赖节点是否存在于定义中...",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
+        for (NodeConfig<C> config : nodeConfigs.values()) {
+            for (String depName : config.dependencyNames) {
+                if (!nodeConfigs.containsKey(depName)) {
+                    String errorMsg = String.format("节点 '%s' 依赖的节点 '%s' 未在本 ChainBuilder 中通过 node() 方法定义。",
+                            config.nodeName, depName);
+                    log.error("[{}] DAG '{}': {}", dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(), errorMsg);
+                    throw new IllegalStateException(errorMsg);
+                }
+            }
+        }
+        log.debug("[{}] DAG '{}': Builder 依赖节点存在性验证通过。",
+                dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName());
     }
 
+    /**
+     * 定义一个没有依赖的起始节点。
+     * 等同于调用 node(nodeName, logic)。
+     *
+     * @param nodeName 起点节点名称。
+     * @param logic    起点节点使用的 NodeLogic 实现。
+     * @return 当前 ChainBuilder 实例。
+     */
+    public ChainBuilder<C> startWith(String nodeName, NodeLogic<C, ?> logic) {
+        return node(nodeName, logic);
+    }
 }
