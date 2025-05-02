@@ -1,23 +1,18 @@
+// [文件名称]: NodeLogic.java
 package xyz.vvrf.reactor.dag.core;
 
-/**
- * reactor-dag
- *
- * @author ruifeng.wen
- * @date 5/2/25
- */
-
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.Flux;
 import reactor.util.retry.Retry;
 import java.time.Duration;
+import java.util.Map; // 引入 Map
 
 /**
  * 代表可复用的 DAG 节点核心业务逻辑。
  * 节点实例的具体名称、依赖、超时、重试等在 DAG 定义时配置。
+ * 节点执行时，应从共享的 Context 读取输入数据，并将需要给下游节点使用的数据写回 Context。
  *
- * @param <C> 上下文类型 (Context Type)
- * @param <T> 节点产生的事件数据类型 (Event Data Type)
+ * @param <C> 上下文类型 (Context Type)，必须设计为线程安全或有效不可变。
+ * @param <T> 节点产生的事件数据类型 (Event Data Type)，用于最终的 DAG 输出流。
  */
 public interface NodeLogic<C, T> {
 
@@ -33,27 +28,26 @@ public interface NodeLogic<C, T> {
 
     /**
      * 获取节点产生的事件数据类型。
+     * 这个类型主要关联到最终输出的 Event 流。
      *
-     * @return Event 类型的 Class 对象。
+     * @return Event 数据类型的 Class 对象。
      */
     Class<T> getEventType();
 
     /**
      * 执行节点的核心逻辑。
      * 实现者应该：
-     * 1. 从 context 读取所需信息。
-     * 2. 使用 dependencyAccessor 检查依赖状态（如果需要）。
-     * 3. 执行业务操作，可能会修改 context。
-     * 4. 生成事件流 Flux<Event<T>>。
-     * 5. 如果需要在事件流处理完成后执行额外操作（如聚合、保存），请编排该逻辑。
-     * 6. 创建 NodeResult<C, T>，包含事件流。
-     * 7. 返回 Mono<NodeResult<C, T>>，该 Mono 的完成信号表示此逻辑单元的工作（包括可能的后处理）已结束。
+     * 1. 从 context 读取所需信息（包括上游节点写入的数据）。
+     * 2. 执行业务操作。
+     * 3. 将产生的、需要被下游节点使用的数据写回 context (注意并发安全)。
+     * 4. 生成用于最终输出的事件流 Flux<Event<T>>。
+     * 5. 创建 NodeResult<C, T>，包含状态和事件流。
+     * 6. 返回 Mono<NodeResult<C, T>>，该 Mono 的完成信号表示此逻辑单元的工作已结束。
      *
-     * @param context      共享的上下文对象，用于读写数据。注意并发安全。
-     * @param dependencies 依赖节点的执行结果访问器。
-     * @return 包含执行结果 (主要是事件流) 的 Mono。Mono 的完成表示节点逻辑单元结束。
+     * @param context 共享的上下文对象，用于读写数据。实现者必须保证对其访问的线程安全。
+     * @return 包含执行结果 (状态和最终输出事件流) 的 Mono。Mono 的完成表示节点逻辑单元结束。
      */
-    Mono<NodeResult<C, T>> execute(C context, DependencyAccessor<C> dependencies);
+    Mono<NodeResult<C, T>> execute(C context);
 
     /**
      * 定义此逻辑的默认重试策略。
@@ -79,11 +73,17 @@ public interface NodeLogic<C, T> {
      * 判断此逻辑单元是否应该基于当前上下文和依赖状态执行。
      * 可以在 DagNodeDefinition 中被覆盖或组合。
      *
-     * @param context      当前上下文对象。
-     * @param dependencies 依赖节点的执行结果访问器。
+     * @param context           当前上下文对象。
+     * @param dependencyResults 依赖节点的执行结果 Map (Key: 节点名, Value: NodeResult)。
+     *                          可用于检查依赖的状态（成功、失败、跳过）。
      * @return 如果逻辑应该执行，则返回 true；否则返回 false。
      */
-    default boolean shouldExecute(C context, DependencyAccessor<C> dependencies) {
-        return true;
+    default boolean shouldExecute(C context, Map<String, NodeResult<C, ?>> dependencyResults) {
+        // 默认行为：只要所有依赖都成功就执行 (如果存在依赖)
+        if (dependencyResults == null || dependencyResults.isEmpty()) {
+            return true; // 没有依赖，直接执行
+        }
+        // 检查所有依赖是否都成功
+        return dependencyResults.values().stream().allMatch(NodeResult::isSuccess);
     }
 }

@@ -1,16 +1,18 @@
-// [file name]: DagDefinition.java
+// [文件名称]: DagDefinition.java
 package xyz.vvrf.reactor.dag.core;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Map; // 引入 Map
 import java.util.Optional;
 
 /**
  * 定义一个特定上下文类型 C 的 DAG 结构。
  * 实现者负责管理节点定义 (DagNodeDefinition)、计算执行顺序和进行验证。
  * 依赖关系在 DagNodeDefinition 中定义。
+ * 节点间的数据传递强制通过共享的 Context C 进行。
  *
- * @param <C> 上下文类型
+ * @param <C> 上下文类型，必须设计为线程安全或有效不可变，以支持并发读写。
  */
 public interface DagDefinition<C> {
 

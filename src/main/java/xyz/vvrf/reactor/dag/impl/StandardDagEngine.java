@@ -1,4 +1,5 @@
-// [file name]: StandardDagEngine.java
+// [文件名称]: StandardDagEngine.java
+// 基本逻辑不变，仍然是协调 NodeExecutor 并合并最终的 Event 流。
 package xyz.vvrf.reactor.dag.impl;
 
 import com.github.benmanes.caffeine.cache.Cache;
@@ -8,7 +9,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 import xyz.vvrf.reactor.dag.core.DagDefinition;
-import xyz.vvrf.reactor.dag.core.DagNodeDefinition; // 使用 Definition
+// import xyz.vvrf.reactor.dag.core.DagNodeDefinition; // 不直接使用
 import xyz.vvrf.reactor.dag.core.Event;
 import xyz.vvrf.reactor.dag.core.NodeResult;
 
@@ -18,7 +19,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * 标准DAG执行引擎 - 负责协调节点执行并合并事件流。
+ * 标准DAG执行引擎 - 负责协调节点执行并合并最终输出的事件流。
  * 使用 StandardNodeExecutor 执行节点逻辑。
  *
  * @author ruifeng.wen (refactored)
@@ -41,7 +42,7 @@ public class StandardDagEngine {
         this.nodeExecutor = Objects.requireNonNull(nodeExecutor, "NodeExecutor 不能为空");
         this.cacheTtl = Objects.requireNonNull(cacheTtl, "Cache TTL 不能为空");
         if (concurrencyLevel <= 0) {
-            throw new IllegalArgumentException("Concurrency level must be positive.");
+            throw new IllegalArgumentException("并发度必须为正数。");
         }
         this.concurrencyLevel = concurrencyLevel;
         if (cacheTtl.isNegative() || cacheTtl.isZero()) {
@@ -54,10 +55,10 @@ public class StandardDagEngine {
      * 执行指定 DAG 定义并返回合并后的事件流。
      *
      * @param <C>            上下文类型
-     * @param initialContext 初始上下文对象 (需要保证线程安全或有效不可变性)
+     * @param initialContext 初始上下文对象 (必须保证线程安全或有效不可变性)
      * @param requestId      请求的唯一标识符 (可选, 为 null 则自动生成)，用于日志和追踪
      * @param dagDefinition  要执行的 DAG 的定义 (必须已初始化)
-     * @return 合并所有节点事件流的 Flux<Event<?>>
+     * @return 合并所有节点最终输出事件流的 Flux<Event<?>>
      * @throws IllegalStateException 如果 DAG 定义未初始化
      */
     public <C> Flux<Event<?>> execute(
@@ -72,7 +73,7 @@ public class StandardDagEngine {
         if (!dagDefinition.isInitialized()) {
             log.error("[RequestId: {}] DAG '{}' (上下文类型: {}) 尚未初始化，无法执行。",
                     actualRequestId, dagName, dagDefinition.getContextType().getSimpleName());
-            throw new IllegalStateException(String.format("DAG '%s' is not initialized.", dagName));
+            throw new IllegalStateException(String.format("DAG '%s' 未初始化。", dagName));
         }
 
         log.debug("[RequestId: {}] 开始执行 DAG '{}' (上下文类型: {})",
@@ -129,7 +130,7 @@ public class StandardDagEngine {
     }
 
     /**
-     * 处理单个节点：获取其执行 Mono，然后提取事件流。
+     * 处理单个节点：获取其执行 Mono，然后提取其最终输出的事件流。
      *
      * @return 该节点产生的事件流 Flux<Event<?>>
      */
@@ -142,7 +143,7 @@ public class StandardDagEngine {
 
         // 1. 获取节点的执行结果 Mono (会触发依赖解析和执行, 或从缓存获取)
         //    这个 Mono 完成时，表示节点的逻辑单元已完成。
-        //    Mono 发出的 NodeResult 对象包含了事件流 Flux<Event<?>>。
+        //    Mono 发出的 NodeResult 对象包含了用于最终输出的事件流 Flux<Event<?>>。
         Mono<NodeResult<C, ?>> nodeResultMono = nodeExecutor.getNodeExecutionMono(
                 nodeName,
                 context,
@@ -153,7 +154,6 @@ public class StandardDagEngine {
 
         // 2. 从结果 Mono 中提取事件流
         //    flatMapMany 会在 nodeResultMono 发出 NodeResult 对象后立即订阅其内部的 events Flux。
-        //    这允许事件流在节点逻辑单元完成之前就开始向外发送（如果 NodeLogic 实现支持）。
         return nodeResultMono
                 .flatMapMany(result -> extractNodeEvents(result, nodeName, dagDefinition.getDagName(), requestId))
                 // 处理获取 NodeResult Mono 本身可能发生的错误 (例如节点查找失败)
@@ -162,10 +162,10 @@ public class StandardDagEngine {
 
 
     /**
-     * 从节点执行结果中安全地提取事件流。
+     * 从节点执行结果中安全地提取用于最终输出的事件流。
      */
     private <C> Flux<Event<?>> extractNodeEvents(
-            NodeResult<C, ?> result, // 使用通配符
+            NodeResult<C, ?> result,
             String nodeName,
             String dagName,
             String requestId) {
@@ -183,10 +183,12 @@ public class StandardDagEngine {
         }
 
         // 2. 节点执行成功，获取事件流
-        Flux<Event<?>> events = (Flux<Event<?>>) (Flux<? extends Event<?>>) result.getEvents(); // 直接获取事件流
+        // NodeResult.getEvents() 返回的是 Flux<Event<T>>，需要强制转换
+        @SuppressWarnings("unchecked") // 类型擦除后 T 变为 ?，这里转换是安全的
+        Flux<Event<?>> events = (Flux<Event<?>>) (Flux<?>) result.getEvents();
 
-        // 3. 记录获取事件流的日志 (不再尝试判断是否为空)
-        log.trace("[RequestId: {}] DAG '{}': 节点 '{}' 执行成功，获取其事件流。", requestId, dagName, nodeName);
+        // 3. 记录获取事件流的日志
+        log.trace("[RequestId: {}] DAG '{}': 节点 '{}' 执行成功，获取其最终输出事件流。", requestId, dagName, nodeName);
 
         // 4. 添加错误处理，以防事件流本身产生错误
         return events.doOnError(e -> log.error(

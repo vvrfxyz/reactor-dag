@@ -1,10 +1,11 @@
-// [file name]: AbstractDagDefinition.java
+// [文件名称]: AbstractDagDefinition.java
+// 无需重大修改，验证逻辑和拓扑排序依然有效。日志和打印信息保持一致。
 package xyz.vvrf.reactor.dag.impl;
 
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import xyz.vvrf.reactor.dag.core.DagDefinition;
-import xyz.vvrf.reactor.dag.core.DagNodeDefinition; // 使用新的 Definition 类
+import xyz.vvrf.reactor.dag.core.DagNodeDefinition;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -52,7 +53,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
      * 通常由 ChainBuilder 调用。
      *
      * @param nodeDefinition 要添加的节点定义。
-     * @throws IllegalStateException 如果节点名称已存在。
+     * @throws IllegalStateException 如果 DAG 已初始化或节点名称已存在。
      */
     public synchronized void addNodeDefinition(DagNodeDefinition<C, ?> nodeDefinition) {
         Objects.requireNonNull(nodeDefinition, "节点定义不能为空");
@@ -61,7 +62,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         if (initialized) {
             log.error("[{}] DAG '{}': 尝试在初始化后添加节点 '{}'，操作被拒绝。",
                     contextType.getSimpleName(), getDagName(), nodeName);
-            throw new IllegalStateException("Cannot add node definition after DAG has been initialized.");
+            throw new IllegalStateException("DAG 初始化后无法添加节点定义。");
         }
 
         if (nodeDefinitionsByName.containsKey(nodeName)) {
@@ -113,8 +114,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             log.error("[{}] DAG '{}' 初始化失败: {}", contextType.getSimpleName(), getDagName(), e.getMessage());
             this.executionOrder = Collections.emptyList();
             this.initialized = false; // 保持未初始化状态
-            // 清理可能部分计算的状态？取决于实现，这里简单重置执行顺序
-            nodeDefinitionsByName.clear(); // 如果初始化失败，清空节点定义可能更安全？或者保留？保留以供调试。
+            // 保留节点定义以供调试
             throw e; // 重新抛出异常
         }
     }
@@ -136,7 +136,6 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
                             nodeName, nodeDef.getNodeLogic().getLogicIdentifier(), depName);
                     throw new IllegalStateException(String.format("[%s] DAG '%s': %s", contextType.getSimpleName(), getDagName(), errorMsg));
                 }
-                // Payload 类型检查已移除
             }
         }
         log.info("[{}] DAG '{}': 依赖关系验证通过", contextType.getSimpleName(), getDagName());
@@ -159,8 +158,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         visiting.add(nodeName);
 
         DagNodeDefinition<C, ?> nodeDef = nodeDefinitionsByName.get(nodeName);
-        // 防御性检查，理论上 validateDependencies 后不会为 null
-        if (nodeDef == null) {
+        if (nodeDef == null) { // 防御性检查
             throw new IllegalStateException(String.format("[%s] DAG '%s': 在循环检测中遇到未注册的节点 '%s'",
                     contextType.getSimpleName(), getDagName(), nodeName));
         }
@@ -169,14 +167,12 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
         if (!dependencies.isEmpty()) {
             for (String depName : dependencies) {
-                // 再次确认依赖存在
-                if (!nodeDefinitionsByName.containsKey(depName)) {
+                if (!nodeDefinitionsByName.containsKey(depName)) { // 再次确认依赖存在
                     throw new IllegalStateException(String.format("[%s] DAG '%s': 节点 '%s' 依赖了不存在的节点 '%s' (在循环检测中发现)",
                             contextType.getSimpleName(), getDagName(), nodeName, depName));
                 }
 
-                if (visiting.contains(depName)) {
-                    // 发现循环
+                if (visiting.contains(depName)) { // 发现循环
                     throw new IllegalStateException(
                             String.format("[%s] DAG '%s': 检测到循环依赖！路径涉及 '%s' -> '%s' (可能更长)",
                                     contextType.getSimpleName(), getDagName(), depName, nodeName));
@@ -215,8 +211,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
                         adj.get(dependencyName).add(dependerName);
                         // 增加依赖者的入度
                         inDegree.put(dependerName, inDegree.get(dependerName) + 1);
-                    } else {
-                        // 理论上 validateDependencies 后不会发生
+                    } else { // 理论上 validateDependencies 后不会发生
                         throw new IllegalStateException(String.format("[%s] DAG '%s': 在拓扑排序中发现未经验证的依赖 '%s' -> '%s'",
                                 contextType.getSimpleName(), getDagName(), dependencyName, dependerName));
                     }

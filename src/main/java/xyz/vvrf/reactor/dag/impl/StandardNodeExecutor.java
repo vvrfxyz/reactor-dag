@@ -1,16 +1,15 @@
-// [file name]: StandardNodeExecutor.java
+// [文件名称]: StandardNodeExecutor.java
 package xyz.vvrf.reactor.dag.impl;
 
-import xyz.vvrf.reactor.dag.core.DependencyAccessor;
 import com.github.benmanes.caffeine.cache.Cache;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
-import reactor.core.scheduler.Schedulers;
+// import reactor.core.scheduler.Schedulers; // Schedulers 未在本文件中直接使用
 import xyz.vvrf.reactor.dag.core.*;
 import reactor.util.retry.Retry;
-import xyz.vvrf.reactor.dag.monitor.DagMonitorListener; // 引入监听器
+import xyz.vvrf.reactor.dag.monitor.DagMonitorListener;
 
 import java.time.Instant;
 import java.time.Duration;
@@ -22,6 +21,7 @@ import java.util.stream.Collectors;
  * 标准节点执行器 - 负责执行单个节点逻辑 (NodeLogic) 并处理依赖关系和缓存。
  * 使用 DagNodeDefinition 获取节点配置。
  * 返回 Mono<NodeResult>，其完成信号表示节点逻辑单元结束。
+ * 节点间数据传递通过共享 Context C 进行。
  *
  * @author ruifeng.wen (refactored)
  */
@@ -44,7 +44,7 @@ public class StandardNodeExecutor {
                                 List<DagMonitorListener> monitorListeners) {
         this.defaultNodeTimeout = Objects.requireNonNull(defaultNodeTimeout, "默认节点超时时间不能为空");
         this.nodeExecutionScheduler = Objects.requireNonNull(nodeExecutionScheduler, "节点执行调度器不能为空");
-        this.monitorListeners = Objects.requireNonNull(monitorListeners, "Monitor listeners list cannot be null");
+        this.monitorListeners = Objects.requireNonNull(monitorListeners, "Monitor listeners 列表不能为空");
 
         if (defaultNodeTimeout.isNegative() || defaultNodeTimeout.isZero()) {
             log.warn("配置的 defaultNodeTimeout <= 0，节点执行可能不会超时: {}", defaultNodeTimeout);
@@ -59,7 +59,7 @@ public class StandardNodeExecutor {
      *
      * @param <C>           上下文类型
      * @param nodeName      节点名称
-     * @param context       当前上下文
+     * @param context       当前上下文 (必须是线程安全的)
      * @param cache         请求级缓存 (Key: String (nodeName), Value: Mono<NodeResult<C, ?>>)
      * @param dagDefinition DAG 定义
      * @param requestId     请求 ID，用于日志
@@ -69,7 +69,7 @@ public class StandardNodeExecutor {
     public <C> Mono<NodeResult<C, ?>> getNodeExecutionMono(
             final String nodeName,
             final C context,
-            final Cache<String, Mono<NodeResult<C, ?>>> cache, // 缓存的值类型改变
+            final Cache<String, Mono<NodeResult<C, ?>>> cache,
             final DagDefinition<C> dagDefinition,
             final String requestId) {
 
@@ -94,7 +94,8 @@ public class StandardNodeExecutor {
                         nodeName, context, cache, dagDefinition, requestId);
 
                 // 使用 .cache() 操作符确保 Mono 只执行一次并将结果缓存起来
-                Mono<NodeResult<C, ?>> monoToCache = newMono.cache(); // cache() 返回 Mono<T>
+                // cache() 会缓存第一个终端信号（onNext/onError/onComplete）并重放给后续订阅者
+                Mono<NodeResult<C, ?>> monoToCache = newMono.cache();
                 cache.put(cacheKey, monoToCache); // 存入缓存
 
                 return monoToCache; // 返回缓存的 Mono
@@ -105,7 +106,7 @@ public class StandardNodeExecutor {
 
     /**
      * 创建节点执行的 Mono。
-     * 这个 Mono 在订阅时会查找节点定义、解析依赖、执行节点逻辑。
+     * 这个 Mono 在订阅时会查找节点定义、解析依赖、检查执行条件、执行节点逻辑。
      *
      * @return Mono<NodeResult < C, ?>> 事件类型 T 由节点逻辑决定，用 ? 表示
      */
@@ -126,12 +127,7 @@ public class StandardNodeExecutor {
                 nodeDefinition = findNodeDefinition(nodeName, dagDefinition, requestId);
             } catch (Exception e) {
                 log.error("[RequestId: {}] DAG '{}': 执行前查找节点定义 '{}' 失败。", requestId, dagName, nodeName, e);
-                // 返回一个立即失败的 Mono，携带查找失败的错误
-                // 需要知道 EventType 来创建 Failure NodeResult，但此时未知。
-                // 方案1：抛出异常，让上层处理。
-                // 方案2：创建一个特殊的 Error NodeResult？
-                // 方案3：让 findNodeDefinition 返回 Optional，这里处理 empty 情况。
-                // 采用方案1，直接返回 Mono.error
+                // 直接返回错误，上层 (如 StandardDagEngine) 会处理
                 return Mono.error(e);
             }
 
@@ -142,25 +138,23 @@ public class StandardNodeExecutor {
 
             // 记录开始时间并通知监听器
             Instant startTime = Instant.now();
-            safeNotifyListeners(l -> l.onNodeStart(requestId, dagName, nodeName, nodeDefinition)); // 传递 Definition
+            safeNotifyListeners(l -> l.onNodeStart(requestId, dagName, nodeName, nodeDefinition));
 
             log.debug("[RequestId: {}] DAG '{}': 准备执行节点 '{}' (逻辑: {}, 事件类型: {}), 超时: {}, 重试: {}",
                     requestId, dagName, nodeName, nodeDefinition.getNodeLogic().getLogicIdentifier(),
                     eventType.getSimpleName(), timeout, retrySpec != null);
 
-            // 2. 解析依赖，获取包含依赖结果的 Map 的 Mono
+            // 2. 解析依赖，获取包含依赖结果 Map 的 Mono
             Mono<Map<String, NodeResult<C, ?>>> dependenciesMono = resolveDependencies(
                     nodeDefinition, context, cache, dagDefinition, requestId);
 
             // 3. 依赖解析完成后，检查是否执行，然后执行节点逻辑
             return dependenciesMono
-                    .flatMap(dependencyResults -> {
-                        DependencyAccessor<C> accessor = new DefaultDependencyAccessor<>(dependencyResults);
-
+                    .flatMap(dependencyResults -> { // 依赖结果 Map
                         boolean shouldExec;
                         try {
-                            // 使用节点定义中的 shouldExecute 判断
-                            shouldExec = nodeDefinition.shouldExecute(context, accessor);
+                            // 使用节点定义中的 shouldExecute 判断，传入依赖结果 Map
+                            shouldExec = nodeDefinition.shouldExecute(context, dependencyResults);
                         } catch (Exception e) {
                             log.error("[RequestId: {}] DAG '{}': 节点 '{}' 的 shouldExecute 方法抛出异常，将视为不执行并产生错误结果。",
                                     requestId, dagName, nodeName, e);
@@ -170,16 +164,16 @@ public class StandardNodeExecutor {
 
                             // 创建失败结果，需要 EventType
                             return Mono.just(NodeResult.failure(context,
-                                    new IllegalStateException("shouldExecute failed for node " + nodeName, e),
+                                    new IllegalStateException("节点 " + nodeName + " 的 shouldExecute 失败", e),
                                     eventType)); // 使用获取到的 EventType
                         }
 
                         if (shouldExec) {
                             // 条件满足，执行节点逻辑 (包含重试和超时)
                             log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 条件满足，将执行。", requestId, dagName, nodeName);
-                            // 调用内部执行方法，传递类型参数 T
+                            // 调用内部执行方法，只传递 context
                             Mono<NodeResult<C, ?>> resultMono = executeNodeLogicInternal(
-                                    nodeDefinition, context, accessor, timeout, retrySpec, requestId, dagName, startTime);
+                                    nodeDefinition, context, timeout, retrySpec, requestId, dagName, startTime);
                             return resultMono;
                         } else {
                             // 条件不满足，跳过执行
@@ -319,11 +313,11 @@ public class StandardNodeExecutor {
     /**
      * 内部方法：实际执行节点逻辑 (NodeLogic)。
      * 返回 Mono<NodeResult<C, T>>，其中 T 是由节点逻辑决定的具体事件类型。
+     * 不再接收 DependencyAccessor 或 Map，强制逻辑通过 Context 交互。
      */
     private <C, T> Mono<NodeResult<C, ?>> executeNodeLogicInternal(
             DagNodeDefinition<C, T> nodeDefinition, // 使用类型 T
-            C context,
-            DependencyAccessor<C> accessor, // 替换 Map
+            C context, // 只接收 Context
             Duration timeout,
             Retry retrySpec,
             String requestId,
@@ -340,8 +334,8 @@ public class StandardNodeExecutor {
                     log.debug("[RequestId: {}] DAG '{}': 节点 '{}' (逻辑: {}) 核心逻辑开始执行...",
                             requestId, dagName, nodeName, nodeLogic.getLogicIdentifier());
 
-                    // 调用 NodeLogic 的 execute 方法
-                    return nodeLogic.execute(context, accessor) // 返回 Mono<NodeResult<C, T>>
+                    // 调用 NodeLogic 的 execute 方法，只传递 context
+                    return nodeLogic.execute(context) // 返回 Mono<NodeResult<C, T>>
                             .subscribeOn(nodeExecutionScheduler) // 在指定调度器上执行
                             .timeout(timeout) // 应用超时
                             .doOnEach(signal -> { // 监控每个信号 (onNext, onError, onComplete)
@@ -353,21 +347,21 @@ public class StandardNodeExecutor {
                                             Duration logicDuration = Duration.between(lStartTime, endTime); // 逻辑时长
 
                                             if (signal.isOnNext()) { // 收到 NodeResult
-                                                NodeResult<C, ?> result = (NodeResult<C, ?>) signal.get(); // 类型是 ?
+                                                // 类型是 NodeResult<C, T>，但为了通用处理转为 ?
+                                                NodeResult<C, ?> result = (NodeResult<C, ?>) signal.get();
                                                 logResult(result, nodeName, dagName, requestId); // 记录结果日志
                                                 // 通知监听器成功或失败 (基于 NodeResult 状态)
                                                 if (result.isSuccess()) {
                                                     safeNotifyListeners(l -> l.onNodeSuccess(requestId, dagName, nodeName, totalDuration, logicDuration, result, nodeDefinition));
-                                                } else { // 可能是 failure 或 skipped (理论上 execute 不应返回 skipped)
-                                                    Throwable err = result.getError().orElse(new RuntimeException("NodeResult in onNext indicated failure/skipped with no error object"));
-                                                    log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 在 doOnEach 的 onNext 中收到非成功结果，按失败处理。", requestId, dagName, nodeName);
+                                                } else { // 可能是 failure
+                                                    Throwable err = result.getError().orElse(new RuntimeException("NodeResult 在 onNext 中指示失败但无错误对象"));
+                                                    log.debug("[RequestId: {}] DAG '{}': 节点 '{}' 在 doOnEach 的 onNext 中收到失败结果。", requestId, dagName, nodeName);
                                                     safeNotifyListeners(l -> l.onNodeFailure(requestId, dagName, nodeName, totalDuration, logicDuration, err, nodeDefinition));
                                                 }
                                             } else if (signal.isOnError()) { // 执行/超时/重试过程中发生错误
                                                 Throwable error = signal.getThrowable();
                                                 if (error instanceof TimeoutException) {
                                                     log.warn("[RequestId: {}] DAG '{}': 节点 '{}' 执行尝试超时 ({}).", requestId, dagName, nodeName, timeout);
-                                                    // 超时也通知 onNodeTimeout
                                                     safeNotifyListeners(l -> l.onNodeTimeout(requestId, dagName, nodeName, timeout, nodeDefinition));
                                                     // 超时最终也会导致 onNodeFailure (在 onErrorResume 中处理)
                                                 } else {
@@ -416,7 +410,8 @@ public class StandardNodeExecutor {
             String requestId) {
 
         if (result.isSuccess()) {
-            boolean hasEvents = result.getEvents() != (Flux<?>)Flux.empty(); // 检查事件流是否为空
+            // 检查事件流是否为空，仅用于日志记录
+            boolean hasEvents = result.getEvents() != (Flux<?>)Flux.empty();
             log.debug("[RequestId: {}] DAG '{}': 节点 '{}' (事件类型: {}) 执行成功. HasEvents: {}",
                     requestId, dagName, nodeName, result.getEventType().getSimpleName(),
                     hasEvents ? "Yes" : "No");
@@ -424,8 +419,8 @@ public class StandardNodeExecutor {
             log.warn("[RequestId: {}] DAG '{}': 节点 '{}' (事件类型: {}) 执行完成但返回失败: {}",
                     requestId, dagName, nodeName, result.getEventType().getSimpleName(),
                     result.getError().map(Throwable::getMessage).orElse("未知错误"));
-        } else { // Skipped
-            log.debug("[RequestId: {}] DAG '{}': 节点 '{}' (事件类型: {}) 返回了 SKIPPED 状态 (理论上不应由 execute 产生)",
+        } else { // Skipped (理论上 execute 不应返回 Skipped)
+            log.warn("[RequestId: {}] DAG '{}': 节点 '{}' (事件类型: {}) 返回了 SKIPPED 状态 (异常情况)",
                     requestId, dagName, nodeName, result.getEventType().getSimpleName());
         }
     }

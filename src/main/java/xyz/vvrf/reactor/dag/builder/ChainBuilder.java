@@ -1,16 +1,16 @@
-// [file name]: ChainBuilder.java
+// [文件名称]: ChainBuilder.java
 package xyz.vvrf.reactor.dag.builder;
 
 import lombok.extern.slf4j.Slf4j;
 import xyz.vvrf.reactor.dag.core.DagNodeDefinition;
 import xyz.vvrf.reactor.dag.core.NodeLogic;
-import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition; // 依赖抽象实现添加节点定义
-import reactor.util.retry.Retry; // 引入 Retry
-import java.time.Duration; // 引入 Duration
+import xyz.vvrf.reactor.dag.core.NodeResult; // 引入 NodeResult
+import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition;
+import reactor.util.retry.Retry;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiPredicate; // 引入 BiPredicate
-import xyz.vvrf.reactor.dag.core.DependencyAccessor; // 引入 DependencyAccessor
+import java.util.function.BiPredicate;
 
 /**
  * DAG 链式构建器。
@@ -32,7 +32,8 @@ public class ChainBuilder<C> {
         final List<String> dependencyNames = new ArrayList<>();
         Retry retrySpec = null;
         Duration timeout = null;
-        BiPredicate<C, DependencyAccessor<C>> shouldExecutePredicate = null;
+        // Predicate 类型改变
+        BiPredicate<C, Map<String, NodeResult<C, ?>>> shouldExecutePredicate = null;
 
         NodeConfig(String nodeName, NodeLogic<C, ?> logic) {
             this.nodeName = nodeName;
@@ -59,7 +60,7 @@ public class ChainBuilder<C> {
      * @param dependencyNodeNames 它所依赖的节点的名称数组。如果为空或不传，表示此节点无依赖。
      * @return 当前 ChainBuilder 实例，支持链式调用。
      * @throws NullPointerException 如果 nodeName 或 logic 为 null。
-     * @throws IllegalArgumentException 如果 nodeName 为空。
+     * @throws IllegalArgumentException 如果 nodeName 为空或依赖自身。
      */
     public ChainBuilder<C> node(String nodeName, NodeLogic<C, ?> logic, String... dependencyNodeNames) {
         Objects.requireNonNull(nodeName, "节点名称不能为空");
@@ -132,12 +133,12 @@ public class ChainBuilder<C> {
      * 会覆盖 NodeLogic 的默认 shouldExecute 行为。
      *
      * @param nodeName    要配置的节点名称。
-     * @param predicate   一个 BiPredicate，接收 Context 和 DependencyAccessor，返回 boolean。
+     * @param predicate   一个 BiPredicate，接收 Context 和 依赖结果Map (Map<String, NodeResult<C, ?>>)，返回 boolean。
      * @return 当前 ChainBuilder 实例。
      * @throws IllegalStateException 如果节点尚未通过 node() 方法定义。
      * @throws NullPointerException 如果 predicate 为 null。
      */
-    public ChainBuilder<C> when(String nodeName, BiPredicate<C, DependencyAccessor<C>> predicate) {
+    public ChainBuilder<C> when(String nodeName, BiPredicate<C, Map<String, NodeResult<C, ?>>> predicate) {
         NodeConfig<C> config = getNodeConfigOrThrow(nodeName);
         config.shouldExecutePredicate = Objects.requireNonNull(predicate, "Predicate 不能为空 for node " + nodeName);
         log.debug("[{}] DAG '{}': Builder 为节点 '{}' 配置了自定义执行条件 (when)。",
@@ -179,7 +180,7 @@ public class ChainBuilder<C> {
                         Collections.unmodifiableList(new ArrayList<>(config.dependencyNames)), // 传递不可变列表
                         config.retrySpec,
                         config.timeout,
-                        config.shouldExecutePredicate
+                        config.shouldExecutePredicate // 传递修改后的 Predicate
                 );
                 // 调用 DagDefinition 的方法来添加节点定义
                 dagDefinition.addNodeDefinition(nodeDefinition);
@@ -189,7 +190,7 @@ public class ChainBuilder<C> {
                         dagDefinition.getContextType().getSimpleName(), dagDefinition.getDagName(),
                         config.nodeName, e.getMessage(), e);
                 // 重新抛出，指示应用过程失败
-                throw new IllegalStateException("Failed to apply configuration for node '" + config.nodeName + "'", e);
+                throw new IllegalStateException("应用节点 '" + config.nodeName + "' 的配置失败", e);
             }
         }
         log.info("[{}] DAG '{}': 成功应用了 {} 个节点的配置到 DagDefinition。",

@@ -1,7 +1,8 @@
-// [file name]: DagMonitorListener.java
+// [文件名称]: DagMonitorListener.java
+// 接口签名保持不变，因为回调方法已经包含了需要的信息 (NodeResult, Throwable, DagNodeDefinition)。
 package xyz.vvrf.reactor.dag.monitor;
 
-import xyz.vvrf.reactor.dag.core.DagNodeDefinition; // 使用 Definition
+import xyz.vvrf.reactor.dag.core.DagNodeDefinition;
 import xyz.vvrf.reactor.dag.core.NodeResult;
 
 import java.time.Duration;
@@ -30,7 +31,7 @@ public interface DagMonitorListener {
      * @param nodeName      成功完成的节点的名称。
      * @param totalDuration 节点从 onNodeStart 到成功的总持续时间。
      * @param logicDuration 节点核心逻辑执行的持续时间 (从 execute 调用开始计时)。
-     * @param result        成功执行返回的 NodeResult。
+     * @param result        成功执行返回的 NodeResult (包含状态和最终输出事件流)。
      * @param nodeDefinition DagNodeDefinition 实例。
      */
     void onNodeSuccess(String requestId, String dagName, String nodeName, Duration totalDuration, Duration logicDuration, NodeResult<?, ?> result, DagNodeDefinition<?, ?> nodeDefinition);
