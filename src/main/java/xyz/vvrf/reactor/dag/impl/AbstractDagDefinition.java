@@ -1,11 +1,11 @@
 // [文件名称]: AbstractDagDefinition.java
-// 无需重大修改，验证逻辑和拓扑排序依然有效。日志和打印信息保持一致。
 package xyz.vvrf.reactor.dag.impl;
 
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import xyz.vvrf.reactor.dag.core.DagDefinition;
 import xyz.vvrf.reactor.dag.core.DagNodeDefinition;
+import xyz.vvrf.reactor.dag.core.EdgeDefinition; // 引入 EdgeDefinition
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,7 +13,7 @@ import java.util.stream.Collectors;
 
 /**
  * DagDefinition 的抽象基类，提供通用的节点管理、验证和拓扑排序逻辑。
- * 使用 DagNodeDefinition 来描述节点实例。
+ * 使用 DagNodeDefinition 来描述节点实例，依赖关系通过 EdgeDefinition 定义。
  * 强制要求 DAG 内的节点名称必须唯一。
  *
  * @param <C> 上下文类型
@@ -21,7 +21,6 @@ import java.util.stream.Collectors;
 @Slf4j
 public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
-    // 存储节点定义，Key 是节点名称
     private final Map<String, DagNodeDefinition<C, ?>> nodeDefinitionsByName = new ConcurrentHashMap<>();
 
     @Getter
@@ -29,14 +28,8 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
     private final Class<C> contextType;
     private boolean initialized = false;
-    private final String dagName; // DAG 名称
+    private final String dagName;
 
-    /**
-     * 构造函数
-     *
-     * @param contextType 此 DAG 定义关联的上下文类型
-     * @param dagName     DAG 的名称
-     */
     protected AbstractDagDefinition(Class<C> contextType, String dagName) {
         this.contextType = Objects.requireNonNull(contextType, "上下文类型不能为空");
         this.dagName = Objects.requireNonNull(dagName, "DAG 名称不能为空");
@@ -48,12 +41,13 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         return this.dagName;
     }
 
+    @Override
+    public Class<C> getContextType() {
+        return this.contextType;
+    }
+
     /**
      * 添加一个配置好的节点定义到 DAG 中。
-     * 通常由 ChainBuilder 调用。
-     *
-     * @param nodeDefinition 要添加的节点定义。
-     * @throws IllegalStateException 如果 DAG 已初始化或节点名称已存在。
      */
     public synchronized void addNodeDefinition(DagNodeDefinition<C, ?> nodeDefinition) {
         Objects.requireNonNull(nodeDefinition, "节点定义不能为空");
@@ -68,7 +62,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         if (nodeDefinitionsByName.containsKey(nodeName)) {
             DagNodeDefinition<C, ?> existingDef = nodeDefinitionsByName.get(nodeName);
             String errorMsg = String.format(
-                    "节点名称冲突！名称 '%s' 已被逻辑 '%s' 使用，不能再被逻辑 '%s' 使用。节点名称在 DAG 中必须唯一。",
+                    "节点名称冲突！名称 '%s' 已被逻辑 '%s' 使用，不能再被逻辑 '%s' 使用。",
                     nodeName,
                     existingDef.getNodeLogic().getLogicIdentifier(),
                     nodeDefinition.getNodeLogic().getLogicIdentifier()
@@ -82,7 +76,7 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
                 contextType.getSimpleName(), getDagName(), nodeName,
                 nodeDefinition.getNodeLogic().getLogicIdentifier(),
                 nodeDefinition.getEventType().getSimpleName(),
-                nodeDefinition.getDependencyNames());
+                nodeDefinition.getDependencyNames()); // 日志仍然显示依赖名称
     }
 
 
@@ -113,9 +107,8 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         } catch (IllegalStateException e) {
             log.error("[{}] DAG '{}' 初始化失败: {}", contextType.getSimpleName(), getDagName(), e.getMessage());
             this.executionOrder = Collections.emptyList();
-            this.initialized = false; // 保持未初始化状态
-            // 保留节点定义以供调试
-            throw e; // 重新抛出异常
+            this.initialized = false;
+            throw e;
         }
     }
 
@@ -123,16 +116,12 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         log.debug("[{}] DAG '{}': 验证依赖关系...", contextType.getSimpleName(), getDagName());
         for (DagNodeDefinition<C, ?> nodeDef : nodeDefinitionsByName.values()) {
             String nodeName = nodeDef.getNodeName();
-            List<String> dependencyNames = nodeDef.getDependencyNames();
-
-            if (dependencyNames.isEmpty()) {
-                continue;
-            }
-
-            for (String depName : dependencyNames) {
+            // 遍历所有入边
+            for (EdgeDefinition<C> edge : nodeDef.getIncomingEdges()) {
+                String depName = edge.getDependencyNodeName();
                 // 检查依赖的节点是否存在 (基于名称)
                 if (!nodeDefinitionsByName.containsKey(depName)) {
-                    String errorMsg = String.format("节点 '%s' (逻辑: %s) 依赖了不存在的节点 '%s'",
+                    String errorMsg = String.format("节点 '%s' (逻辑: %s) 的入边定义了不存在的依赖节点 '%s'",
                             nodeName, nodeDef.getNodeLogic().getLogicIdentifier(), depName);
                     throw new IllegalStateException(String.format("[%s] DAG '%s': %s", contextType.getSimpleName(), getDagName(), errorMsg));
                 }
@@ -143,8 +132,8 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
     private void detectCycles() {
         log.debug("[{}] DAG '{}': 检测循环依赖...", contextType.getSimpleName(), getDagName());
-        Set<String> visited = new HashSet<>(); // 完全访问过的节点
-        Set<String> visiting = new HashSet<>(); // 当前递归路径上的节点
+        Set<String> visited = new HashSet<>();
+        Set<String> visiting = new HashSet<>();
 
         for (String nodeName : nodeDefinitionsByName.keySet()) {
             if (!visited.contains(nodeName)) {
@@ -158,21 +147,23 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         visiting.add(nodeName);
 
         DagNodeDefinition<C, ?> nodeDef = nodeDefinitionsByName.get(nodeName);
-        if (nodeDef == null) { // 防御性检查
+        if (nodeDef == null) {
             throw new IllegalStateException(String.format("[%s] DAG '%s': 在循环检测中遇到未注册的节点 '%s'",
                     contextType.getSimpleName(), getDagName(), nodeName));
         }
 
+        // 获取依赖节点名称列表
         List<String> dependencies = nodeDef.getDependencyNames();
 
         if (!dependencies.isEmpty()) {
             for (String depName : dependencies) {
-                if (!nodeDefinitionsByName.containsKey(depName)) { // 再次确认依赖存在
+                // 再次确认依赖存在 (validateDependencies 应该已保证)
+                if (!nodeDefinitionsByName.containsKey(depName)) {
                     throw new IllegalStateException(String.format("[%s] DAG '%s': 节点 '%s' 依赖了不存在的节点 '%s' (在循环检测中发现)",
                             contextType.getSimpleName(), getDagName(), nodeName, depName));
                 }
 
-                if (visiting.contains(depName)) { // 发现循环
+                if (visiting.contains(depName)) {
                     throw new IllegalStateException(
                             String.format("[%s] DAG '%s': 检测到循环依赖！路径涉及 '%s' -> '%s' (可能更长)",
                                     contextType.getSimpleName(), getDagName(), depName, nodeName));
@@ -184,16 +175,15 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
             }
         }
 
-        visiting.remove(nodeName); // 离开当前路径
-        visited.add(nodeName);     // 标记为已完全访问
+        visiting.remove(nodeName);
+        visited.add(nodeName);
     }
 
     private List<String> calculateExecutionOrder() {
         log.debug("[{}] DAG '{}': 计算拓扑执行顺序...", contextType.getSimpleName(), getDagName());
-        Map<String, Integer> inDegree = new HashMap<>(); // 入度计数
-        Map<String, List<String>> adj = new HashMap<>(); // 邻接表 (key: 依赖节点, value: 依赖于 key 的节点列表)
+        Map<String, Integer> inDegree = new HashMap<>();
+        Map<String, List<String>> adj = new HashMap<>(); // key: 依赖节点, value: 依赖于 key 的节点列表
 
-        // 初始化所有节点的入度和邻接表
         for (String nodeName : nodeDefinitionsByName.keySet()) {
             inDegree.put(nodeName, 0);
             adj.put(nodeName, new ArrayList<>());
@@ -202,26 +192,23 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         // 构建图和计算入度
         for (DagNodeDefinition<C, ?> nodeDef : nodeDefinitionsByName.values()) {
             String dependerName = nodeDef.getNodeName(); // 依赖者
-            List<String> dependencies = nodeDef.getDependencyNames(); // 被依赖者列表
-
-            if (!dependencies.isEmpty()) {
-                for (String dependencyName : dependencies) {
-                    // 添加边: dependencyName -> dependerName
-                    if (adj.containsKey(dependencyName)) {
-                        adj.get(dependencyName).add(dependerName);
-                        // 增加依赖者的入度
-                        inDegree.put(dependerName, inDegree.get(dependerName) + 1);
-                    } else { // 理论上 validateDependencies 后不会发生
-                        throw new IllegalStateException(String.format("[%s] DAG '%s': 在拓扑排序中发现未经验证的依赖 '%s' -> '%s'",
-                                contextType.getSimpleName(), getDagName(), dependencyName, dependerName));
-                    }
+            // 遍历所有入边来确定依赖关系
+            for (EdgeDefinition<C> edge : nodeDef.getIncomingEdges()) {
+                String dependencyName = edge.getDependencyNodeName(); // 被依赖者
+                // 添加边: dependencyName -> dependerName
+                if (adj.containsKey(dependencyName)) {
+                    adj.get(dependencyName).add(dependerName);
+                    // 增加依赖者的入度
+                    inDegree.put(dependerName, inDegree.get(dependerName) + 1);
+                } else {
+                    throw new IllegalStateException(String.format("[%s] DAG '%s': 在拓扑排序中发现未经验证的依赖 '%s' -> '%s'",
+                            contextType.getSimpleName(), getDagName(), dependencyName, dependerName));
                 }
             }
         }
 
         // Kahn 算法
         Queue<String> queue = new LinkedList<>();
-        // 将所有入度为 0 的节点加入队列
         for (Map.Entry<String, Integer> entry : inDegree.entrySet()) {
             if (entry.getValue() == 0) {
                 queue.offer(entry.getKey());
@@ -230,21 +217,17 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
 
         List<String> sortedOrder = new ArrayList<>();
         while (!queue.isEmpty()) {
-            String u = queue.poll(); // 取出入度为 0 的节点
+            String u = queue.poll();
             sortedOrder.add(u);
 
-            // 遍历 u 的所有邻居节点 v
             for (String v : adj.get(u)) {
-                // 将 v 的入度减 1
                 inDegree.put(v, inDegree.get(v) - 1);
-                // 如果 v 的入度变为 0，加入队列
                 if (inDegree.get(v) == 0) {
                     queue.offer(v);
                 }
             }
         }
 
-        // 检查排序结果是否包含所有节点
         if (sortedOrder.size() != nodeDefinitionsByName.size()) {
             Set<String> remainingNodes = nodeDefinitionsByName.keySet().stream()
                     .filter(n -> !sortedOrder.contains(n))
@@ -268,47 +251,42 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         builder.append(String.format("%-40s | %-40s | %-30s | %-40s | %-40s\n",
                 "节点名称", "逻辑实现", "事件类型", "依赖节点", "被依赖节点"));
         StringBuilder divider = new StringBuilder();
-        for (int i = 0; i < 195; i++) {
-            divider.append("-"); // 调整分隔线长度
-        }
+        for (int i = 0; i < 195; i++) { divider.append("-"); }
         builder.append(divider).append("\n");
 
-        Map<String, Set<String>> dependsOn = new HashMap<>(); // key 依赖 value 集合
-        Map<String, Set<String>> dependedBy = new HashMap<>(); // key 被 value 集合依赖
+        Map<String, Set<String>> dependsOn = new HashMap<>();
+        Map<String, Set<String>> dependedBy = new HashMap<>();
 
-        // 初始化映射
         for (String nodeName : nodeDefinitionsByName.keySet()) {
             dependsOn.put(nodeName, new HashSet<>());
             dependedBy.put(nodeName, new HashSet<>());
         }
 
-        // 填充依赖关系
+        // 填充依赖关系 (基于 EdgeDefinition)
         for (DagNodeDefinition<C, ?> nodeDef : nodeDefinitionsByName.values()) {
             String nodeName = nodeDef.getNodeName();
-            List<String> dependencies = nodeDef.getDependencyNames();
-            if (!dependencies.isEmpty()) {
-                for (String depName : dependencies) {
-                    dependsOn.computeIfAbsent(nodeName, k -> new HashSet<>()).add(depName);
-                    dependedBy.computeIfAbsent(depName, k -> new HashSet<>()).add(nodeName);
-                }
+            for (EdgeDefinition<C> edge : nodeDef.getIncomingEdges()) {
+                String depName = edge.getDependencyNodeName();
+                dependsOn.computeIfAbsent(nodeName, k -> new HashSet<>()).add(depName);
+                dependedBy.computeIfAbsent(depName, k -> new HashSet<>()).add(nodeName);
             }
         }
 
-        // 按执行顺序列出节点
         List<String> nodesToIterate = executionOrder.isEmpty()
                 ? new ArrayList<>(nodeDefinitionsByName.keySet())
                 : executionOrder;
         if (executionOrder.isEmpty() && !nodeDefinitionsByName.isEmpty()) {
-            Collections.sort(nodesToIterate); // 如果没有执行顺序，按名称排序打印
+            Collections.sort(nodesToIterate);
         }
-
 
         if (nodesToIterate.isEmpty()) {
             builder.append("  (DAG 为空)\n");
         } else {
             for (String nodeName : nodesToIterate) {
                 DagNodeDefinition<C, ?> nodeDef = nodeDefinitionsByName.get(nodeName);
-                if (nodeDef == null) continue; // 防御性检查
+                if (nodeDef == null) {
+                    continue;
+                }
 
                 String logicIdentifier = nodeDef.getNodeLogic().getLogicIdentifier();
                 String eventType = nodeDef.getEventType().getSimpleName();
@@ -341,34 +319,31 @@ public abstract class AbstractDagDefinition<C> implements DagDefinition<C> {
         dotGraph.append(String.format("  label=\"DAG Structure (%s - %s)\";\n", contextType.getSimpleName(), getDagName()));
         dotGraph.append("  labelloc=top;\n");
         dotGraph.append("  fontsize=16;\n");
-        dotGraph.append("  rankdir=LR;\n"); // Left to Right layout
+        dotGraph.append("  rankdir=LR;\n");
         dotGraph.append("  node [shape=record, style=\"rounded,filled\", fillcolor=\"lightblue\", fontname=\"Arial\", fontsize=10];\n");
         dotGraph.append("  edge [fontname=\"Arial\", fontsize=9];\n");
 
-        // 定义节点
         for (DagNodeDefinition<C, ?> nodeDef : nodeDefinitionsByName.values()) {
             String nodeName = nodeDef.getNodeName();
             String logicId = nodeDef.getNodeLogic().getLogicIdentifier();
             String eventType = nodeDef.getEventType().getSimpleName();
-            // 节点标签格式: { 节点名 | 逻辑实现 | 事件类型 }
             String label = String.format("{%s | Logic: %s | Event: %s}",
-                    nodeName.replace("\"", "\\\""), // 转义引号
+                    nodeName.replace("\"", "\\\""),
                     logicId.replace("\"", "\\\""),
                     eventType.replace("\"", "\\\""));
             dotGraph.append(String.format("  \"%s\" [label=\"%s\"];\n", nodeName, label));
         }
 
-        // 定义边 (依赖关系)
+        // 定义边 (基于 EdgeDefinition)
         for (DagNodeDefinition<C, ?> nodeDef : nodeDefinitionsByName.values()) {
             String dependerName = nodeDef.getNodeName();
-            List<String> dependencies = nodeDef.getDependencyNames();
-            if (!dependencies.isEmpty()) {
-                for (String dependencyName : dependencies) {
-                    // 确保依赖节点也存在 (理论上验证过)
-                    if (nodeDefinitionsByName.containsKey(dependencyName)) {
-                        // 边: dependencyName -> dependerName
-                        dotGraph.append(String.format("  \"%s\" -> \"%s\";\n", dependencyName, dependerName));
-                    }
+            for (EdgeDefinition<C> edge : nodeDef.getIncomingEdges()) {
+                String dependencyName = edge.getDependencyNodeName();
+                if (nodeDefinitionsByName.containsKey(dependencyName)) {
+                    // 可以选择性地在边上添加标签指示条件类型
+                    boolean isDefaultCond = edge.isDefaultCondition();
+                    String edgeLabel = isDefaultCond ? "" : " [label=\"Custom\"]"; // 示例
+                    dotGraph.append(String.format("  \"%s\" -> \"%s\"%s;\n", dependencyName, dependerName, edgeLabel));
                 }
             }
         }

@@ -5,16 +5,17 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import xyz.vvrf.reactor.dag.builder.ChainBuilder;
+import xyz.vvrf.reactor.dag.core.NodeResult; // 引入 NodeResult，用于可能的自定义条件
 import xyz.vvrf.reactor.dag.example.dataParalleDag.node.*;
 import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition;
-// import xyz.vvrf.reactor.dag.core.NodeResult; // 如果使用 when，可能需要导入
 // import java.time.Duration; // 如果使用 withTimeout
 // import reactor.util.retry.Retry; // 如果使用 withRetry
+import java.util.Map; // 引入 Map，用于可能的自定义条件
 
 /**
  * reactor-dag
  * 定义一个扇出/扇入结构的 DAG，用于模拟并行执行。
- * 使用重构后的 ChainBuilder 和 NodeLogic。
+ * 使用重构后的 ChainBuilder（支持条件边）和 NodeLogic。
  *
  * @author ruifeng.wen (重构)
  * @date (当前日期)
@@ -24,9 +25,9 @@ import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition;
 public class DataParalleDag extends AbstractDagDefinition<ParalleContext> {
 
     // DAG 的名称
-    private static final String DAG_NAME = "DataParallelExampleDAG";
+    private static final String DAG_NAME = "DataParallelExampleDAG_ConditionalEdges"; // 名称稍作区分
 
-    // 使用 NodeLogic 实现类的类名作为节点名，更清晰且不易出错
+    // 使用 NodeLogic 实现类的类名作为节点名
     private static final String FIRST_NODE_NAME = FirstNode.class.getSimpleName();
     private static final String PARALLEL_A_NAME = ParallelNodeA.class.getSimpleName();
     private static final String PARALLEL_B_NAME = ParallelNodeB.class.getSimpleName();
@@ -36,13 +37,7 @@ public class DataParalleDag extends AbstractDagDefinition<ParalleContext> {
 
     /**
      * 构造函数，通过 Spring 注入所有需要的 NodeLogic Bean。
-     * 使用 ChainBuilder 定义 DAG 结构。
-     *
-     * @param firstNode     起始节点逻辑
-     * @param parallelNodeA 并行节点 A 逻辑
-     * @param parallelNodeB 并行节点 B 逻辑
-     * @param parallelNodeC 并行节点 C 逻辑
-     * @param finalNode     最终节点逻辑
+     * 使用 ChainBuilder 定义 DAG 结构，采用新的依赖定义方式。
      */
     @Autowired
     public DataParalleDag(
@@ -52,50 +47,70 @@ public class DataParalleDag extends AbstractDagDefinition<ParalleContext> {
             ParallelNodeC parallelNodeC,
             FinalNode finalNode
     ) {
-        // 1. 调用父类构造函数，传入上下文类型和 DAG 名称
+        // 1. 调用父类构造函数
         super(ParalleContext.class, DAG_NAME);
 
-        log.info("开始为 DAG '{}' (上下文: {}) 配置节点和依赖关系...",
+        log.info("开始为 DAG '{}' (上下文: {}) 配置节点和依赖关系 (使用条件边)...",
                 getDagName(), getContextType().getSimpleName());
 
         // 2. 创建 ChainBuilder 实例
         ChainBuilder<ParalleContext> builder = new ChainBuilder<>(this);
 
         try {
-            // 3. 使用 ChainBuilder 定义节点实例及其依赖
-            //    使用定义的常量作为节点名
+            // 3. 使用 ChainBuilder 定义节点实例及其依赖边
+            //    采用 node().dependsOn().withCondition() 的链式调用
+
             builder
-                    .node(FIRST_NODE_NAME, firstNode) // 起点节点
+                    .node(FIRST_NODE_NAME, firstNode); // 起点节点，无依赖
 
-                    .node(PARALLEL_A_NAME, parallelNodeA, FIRST_NODE_NAME) // 并行节点 A
-                    .node(PARALLEL_B_NAME, parallelNodeB, FIRST_NODE_NAME) // 并行节点 B
-                    .node(PARALLEL_C_NAME, parallelNodeC, FIRST_NODE_NAME) // 并行节点 C
+            builder.node(PARALLEL_A_NAME, parallelNodeA)
+                    .dependsOn(FIRST_NODE_NAME); // 依赖 FirstNode，使用默认条件 (FirstNode 成功)
 
-                    .node(FINAL_NODE_NAME, finalNode, PARALLEL_A_NAME, PARALLEL_B_NAME, PARALLEL_C_NAME); // 最终节点
+            builder.node(PARALLEL_B_NAME, parallelNodeB)
+                    .dependsOn(FIRST_NODE_NAME); // 依赖 FirstNode，使用默认条件
 
-            // 示例：为特定节点添加配置 (保持不变)
+            builder.node(PARALLEL_C_NAME, parallelNodeC)
+                    .dependsOn(FIRST_NODE_NAME); // 依赖 FirstNode，使用默认条件
+
+            builder.node(FINAL_NODE_NAME, finalNode)
+                    .dependsOn(PARALLEL_A_NAME) // 依赖 A，使用默认条件 (A 成功)
+                    .dependsOn(PARALLEL_B_NAME) // 依赖 B，使用默认条件 (B 成功)
+                    .dependsOn(PARALLEL_C_NAME); // 依赖 C，使用默认条件 (C 成功)
+            // 默认情况下，FinalNode 会在 A, B, C 都成功后执行
+
+            // 示例：为 FinalNode 的某条边添加自定义条件
+            /*
+            builder.node(FINAL_NODE_NAME, finalNode)
+                   .dependsOn(PARALLEL_A_NAME) // 依赖 A
+                   .withCondition((ctx, resultA) -> { // 自定义条件：A 必须成功
+                       log.info("检查 FinalNode 对 A 的条件: A 是否成功? {}", resultA != null && resultA.isSuccess());
+                       return resultA != null && resultA.isSuccess();
+                   })
+                   .dependsOn(PARALLEL_B_NAME) // 依赖 B
+                   .withCondition((ctx, resultB) -> { // 自定义条件：B 成功或跳过都可以
+                       log.info("检查 FinalNode 对 B 的条件: B 是否成功或跳过? {}", resultB != null && (resultB.isSuccess() || resultB.isSkipped()));
+                       return resultB != null && (resultB.isSuccess() || resultB.isSkipped());
+                   })
+                   .dependsOn(PARALLEL_C_NAME); // 依赖 C，使用默认条件 (C 必须成功)
+            */
+            // 注意：即使 B 的条件允许跳过，FinalNode 仍然需要等待 B 的 Mono 完成才能评估条件。
+
+            // 其他配置示例 (保持不变)
             // builder.withTimeout(PARALLEL_A_NAME, Duration.ofSeconds(1));
             // builder.withRetry(PARALLEL_B_NAME, Retry.backoff(3, Duration.ofMillis(100)));
-
-            // 示例：使用新的 when 签名 (如果需要)
-            // builder.when(FINAL_NODE_NAME, (ctx, depResults) ->
-            //     depResults.containsKey(PARALLEL_A_NAME) && depResults.get(PARALLEL_A_NAME).isSuccess()
-            // ); // 仅当 A 成功时执行 FinalNode
 
             // 4. 将 Builder 中的配置应用到 DagDefinition
             builder.applyToDefinition();
 
             // 5. 初始化 DAG (验证、拓扑排序等)
-            this.initialize(); // 这个方法来自 AbstractDagDefinition
+            this.initialize();
 
             log.info("DAG '{}' 配置和初始化完成。", getDagName());
 
         } catch (IllegalStateException e) {
-            // 捕获构建或初始化过程中的错误
             log.error("配置或初始化 DAG '{}' 失败: {}", getDagName(), e.getMessage(), e);
             throw e;
         } catch (Exception e) {
-            // 捕获其他意外异常
             log.error("配置或初始化 DAG '{}' 时发生意外错误: {}", getDagName(), e.getMessage(), e);
             throw new RuntimeException("初始化 DAG " + getDagName() + " 失败", e);
         }
@@ -103,14 +118,9 @@ public class DataParalleDag extends AbstractDagDefinition<ParalleContext> {
 
     /**
      * 实现 DagDefinition 接口要求的 getContextType 方法。
-     * 返回此 DAG 定义关联的具体上下文类型。
-     *
-     * @return 上下文类型的 Class 对象。
      */
     @Override
     public Class<ParalleContext> getContextType() {
-        // 直接返回在父类构造函数中指定的具体类型
         return ParalleContext.class;
     }
-
 }

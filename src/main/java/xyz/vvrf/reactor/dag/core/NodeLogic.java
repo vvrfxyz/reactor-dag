@@ -4,11 +4,11 @@ package xyz.vvrf.reactor.dag.core;
 import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 import java.time.Duration;
-import java.util.Map; // 引入 Map
+// 移除 Map 和 shouldExecute 相关导入
 
 /**
  * 代表可复用的 DAG 节点核心业务逻辑。
- * 节点实例的具体名称、依赖、超时、重试等在 DAG 定义时配置。
+ * 节点实例的具体名称、依赖（通过边定义）、超时、重试等在 DAG 定义时配置。
  * 节点执行时，应从共享的 Context 读取输入数据，并将需要给下游节点使用的数据写回 Context。
  *
  * @param <C> 上下文类型 (Context Type)，必须设计为线程安全或有效不可变。
@@ -69,21 +69,6 @@ public interface NodeLogic<C, T> {
         return null;
     }
 
-    /**
-     * 判断此逻辑单元是否应该基于当前上下文和依赖状态执行。
-     * 可以在 DagNodeDefinition 中被覆盖或组合。
-     *
-     * @param context           当前上下文对象。
-     * @param dependencyResults 依赖节点的执行结果 Map (Key: 节点名, Value: NodeResult)。
-     *                          可用于检查依赖的状态（成功、失败、跳过）。
-     * @return 如果逻辑应该执行，则返回 true；否则返回 false。
-     */
-    default boolean shouldExecute(C context, Map<String, NodeResult<C, ?>> dependencyResults) {
-        // 默认行为：只要所有依赖都成功就执行 (如果存在依赖)
-        if (dependencyResults == null || dependencyResults.isEmpty()) {
-            return true; // 没有依赖，直接执行
-        }
-        // 检查所有依赖是否都成功
-        return dependencyResults.values().stream().allMatch(NodeResult::isSuccess);
-    }
+    // 移除 shouldExecute 方法
+    // default boolean shouldExecute(C context, Map<String, NodeResult<C, ?>> dependencyResults) { ... }
 }
