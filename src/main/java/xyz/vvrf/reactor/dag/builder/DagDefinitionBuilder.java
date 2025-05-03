@@ -15,9 +15,10 @@ import java.util.stream.Collectors;
 /**
  * 用于以编程方式构建 DagDefinition 的构建器。
  * 支持注册节点实现、添加节点实例和定义它们之间的连接。
+ * 新增了直接添加节点实现实例的方法。
  *
  * @param <C> 上下文类型
- * @author ruifeng.wen (Refactored)
+ * @author ruifeng.wen (Refactored & Modified)
  */
 @Slf4j
 public class DagDefinitionBuilder<C> {
@@ -26,7 +27,7 @@ public class DagDefinitionBuilder<C> {
     private String dagName;
     private ErrorHandlingStrategy errorStrategy = ErrorHandlingStrategy.FAIL_FAST; // 默认策略
 
-    // 注册的节点实现 (逻辑节点)
+    // 注册的节点实现 (逻辑节点) - 仍然保留，用于 typeId 方式
     private final Map<String, DagNode<C, ?>> registeredImplementations = new ConcurrentHashMap<>();
 
     // 图中定义的节点实例
@@ -67,6 +68,7 @@ public class DagDefinitionBuilder<C> {
 
     /**
      * 注册一个可复用的节点实现 (逻辑节点)。
+     * 适用于需要通过类型 ID 多次实例化节点的场景。
      *
      * @param typeId             此节点实现的唯一标识符 (例如，类的全名或自定义 ID)
      * @param nodeImplementation 节点逻辑的实例
@@ -86,7 +88,7 @@ public class DagDefinitionBuilder<C> {
     }
 
     /**
-     * 向图中添加一个节点实例。
+     * 向图中添加一个节点实例，使用预先注册的实现类型 ID。
      *
      * @param instanceName 节点实例在图中的唯一名称
      * @param typeId       要使用的已注册节点实现的 ID
@@ -102,12 +104,48 @@ public class DagDefinitionBuilder<C> {
         }
         DagNode<C, ?> implementation = registeredImplementations.get(typeId);
         if (implementation == null) {
-            throw new IllegalArgumentException(String.format("Node implementation type ID '%s' not registered for DAG '%s'.", typeId, dagName));
+            throw new IllegalArgumentException(String.format("Node implementation type ID '%s' not registered for DAG '%s'. Cannot add instance '%s'.", typeId, dagName, instanceName));
         }
 
+        // 使用 NodeBuildInfo 存储信息
         nodesInGraph.put(instanceName, new NodeBuildInfo<>(typeId, implementation));
-        wiring.put(instanceName, new HashMap<>()); // 初始化连接 Map
-        log.debug("DAG '{}': Added node instance '{}' using implementation '{}'", dagName, instanceName, typeId);
+        wiring.putIfAbsent(instanceName, new HashMap<>()); // 初始化连接 Map (如果不存在)
+        log.debug("DAG '{}': Added node instance '{}' using registered implementation '{}'", dagName, instanceName, typeId);
+        return this;
+    }
+
+    /**
+     * 【新方法】向图中添加一个节点实例，直接提供节点实现。
+     * 适用于不需要预先注册或复用类型 ID 的场景。
+     *
+     * @param instanceName   节点实例在图中的唯一名称
+     * @param implementation 节点逻辑的实例 (不能为空)
+     * @return this builder
+     * @throws IllegalArgumentException 如果 instanceName 已存在
+     */
+    public DagDefinitionBuilder<C> addNode(String instanceName, DagNode<C, ?> implementation) {
+        Objects.requireNonNull(instanceName, "Instance name cannot be null");
+        Objects.requireNonNull(implementation, "Node implementation cannot be null for instance '" + instanceName + "'");
+
+        if (nodesInGraph.containsKey(instanceName)) {
+            throw new IllegalArgumentException(String.format("Node instance name '%s' already exists in DAG '%s'.", instanceName, dagName));
+        }
+
+        // 为直接添加的实现生成一个内部 typeId，主要用于日志和 NodeBuildInfo 结构一致性
+        String internalTypeId = generateInternalTypeId(implementation);
+
+        // 检查这个内部 typeId 是否与已注册的冲突 (概率极低，但可以加一层保护)
+        if (registeredImplementations.containsKey(internalTypeId)) {
+            log.warn("DAG '{}': Generated internal type ID '{}' for instance '{}' conflicts with a registered implementation ID. This might cause confusion.",
+                    dagName, internalTypeId, instanceName);
+            // 或者可以选择抛出异常，取决于严格程度
+        }
+
+        // 使用 NodeBuildInfo 存储信息
+        nodesInGraph.put(instanceName, new NodeBuildInfo<>(internalTypeId, implementation));
+        wiring.putIfAbsent(instanceName, new HashMap<>()); // 初始化连接 Map (如果不存在)
+        log.debug("DAG '{}': Added node instance '{}' with direct implementation (Class: {}, Internal TypeId: {})",
+                dagName, instanceName, implementation.getClass().getSimpleName(), internalTypeId);
         return this;
     }
 
@@ -129,10 +167,10 @@ public class DagDefinitionBuilder<C> {
         NodeBuildInfo<C> upstreamInfo = nodesInGraph.get(upstreamInstanceName);
 
         if (downstreamInfo == null) {
-            throw new IllegalArgumentException(String.format("Downstream node instance '%s' not found in DAG '%s'.", downstreamInstanceName, dagName));
+            throw new IllegalArgumentException(String.format("Downstream node instance '%s' not found in DAG '%s'. Cannot wire input '%s'.", downstreamInstanceName, dagName, inputSlotName));
         }
         if (upstreamInfo == null) {
-            throw new IllegalArgumentException(String.format("Upstream node instance '%s' not found in DAG '%s'.", upstreamInstanceName, dagName));
+            throw new IllegalArgumentException(String.format("Upstream node instance '%s' not found in DAG '%s'. Cannot wire to input '%s' of '%s'.", upstreamInstanceName, dagName, inputSlotName, downstreamInstanceName));
         }
 
         // 检查下游节点是否声明了此输入槽
@@ -145,21 +183,24 @@ public class DagDefinitionBuilder<C> {
         // 检查上游节点的输出类型是否兼容
         Class<?> upstreamOutputType = upstreamInfo.getOutputType();
         if (!requiredInputType.isAssignableFrom(upstreamOutputType)) {
-            throw new IllegalArgumentException(String.format("Type mismatch for input '%s' of node '%s'. Required: %s, Provided by '%s': %s",
+            // 允许 Void 类型作为任何类型的输入源 (表示仅依赖执行完成，不关心数据)
+            // 但下游必须显式声明需要 Void.class 或 Object.class
+            // 这里维持严格类型检查，如果需要 Void 传递，上游应返回 NodeResult.success(context, Void.class)
+            throw new IllegalArgumentException(String.format("Type mismatch for input '%s' of node '%s'. Required: %s, Provided by '%s' (Type: %s): %s",
                     inputSlotName, downstreamInstanceName, requiredInputType.getSimpleName(),
-                    upstreamInstanceName, upstreamOutputType.getSimpleName()));
+                    upstreamInstanceName, upstreamInfo.getTypeId(), upstreamOutputType.getSimpleName()));
         }
 
         // 检查输入槽是否已被连接
-        Map<String, String> downstreamWiring = wiring.get(downstreamInstanceName);
+        Map<String, String> downstreamWiring = wiring.computeIfAbsent(downstreamInstanceName, k -> new HashMap<>()); // 确保 Map 存在
         if (downstreamWiring.containsKey(inputSlotName)) {
-            throw new IllegalArgumentException(String.format("Input slot '%s' of node '%s' is already wired to '%s'.",
-                    inputSlotName, downstreamInstanceName, downstreamWiring.get(inputSlotName)));
+            throw new IllegalArgumentException(String.format("Input slot '%s' of node '%s' is already wired to '%s'. Cannot re-wire to '%s'.",
+                    inputSlotName, downstreamInstanceName, downstreamWiring.get(inputSlotName), upstreamInstanceName));
         }
 
         downstreamWiring.put(inputSlotName, upstreamInstanceName);
-        log.debug("DAG '{}': Wired output of '{}' to input slot '{}' of '{}'",
-                dagName, upstreamInstanceName, inputSlotName, downstreamInstanceName);
+        log.debug("DAG '{}': Wired output of '{}' (Type: {}) to input slot '{}' of '{}' (Type: {})",
+                dagName, upstreamInstanceName, upstreamInfo.getTypeId(), inputSlotName, downstreamInstanceName, downstreamInfo.getTypeId());
         return this;
     }
 
@@ -172,6 +213,13 @@ public class DagDefinitionBuilder<C> {
      */
     public DagDefinition<C> build() {
         log.info("Building DagDefinition for '{}'...", dagName);
+
+        // 0. 预检查：确保所有添加的节点都有 NodeBuildInfo
+        if (nodesInGraph.isEmpty() && !wiring.isEmpty()) {
+            log.warn("DAG '{}': Wiring defined but no nodes were added.", dagName);
+            // 可以选择清空 wiring 或继续，当前选择继续，让验证步骤处理
+        }
+        // (可以增加检查，确保 wiring 中的 key 和 value 都在 nodesInGraph 中，虽然 wire 方法已做检查)
 
         // 1. 验证图结构 (使用 GraphUtils)
         try {
@@ -192,13 +240,18 @@ public class DagDefinitionBuilder<C> {
         // 3. 计算拓扑排序 (使用 GraphUtils)
         List<String> executionOrder;
         try {
-            executionOrder = GraphUtils.topologicalSort(nodesInGraph.keySet(), wiring, dagName);
+            // 如果没有节点，返回空列表
+            if (nodesInGraph.isEmpty()) {
+                executionOrder = Collections.emptyList();
+            } else {
+                executionOrder = GraphUtils.topologicalSort(nodesInGraph.keySet(), wiring, dagName);
+            }
         } catch (IllegalStateException e) {
             log.error("DAG '{}' topological sort failed during build: {}", dagName, e.getMessage());
             throw e;
         }
 
-        log.info("DAG '{}' build successful. Execution order: {}", dagName, executionOrder);
+        log.info("DAG '{}' build successful. {} nodes found. Execution order: {}", dagName, nodesInGraph.size(), executionOrder);
         printDagStructure(); // 打印结构信息
 
         // 4. 创建不可变的 DagDefinition 实例
@@ -206,13 +259,19 @@ public class DagDefinitionBuilder<C> {
                 dagName,
                 contextType,
                 errorStrategy,
-                Collections.unmodifiableMap(nodesInGraph),
+                Collections.unmodifiableMap(new HashMap<>(nodesInGraph)), // 创建不可变副本
                 deepUnmodifiableMap(wiring), // 确保内部 Map 也不可变
-                executionOrder
+                executionOrder // topologicalSort 返回的是不可变列表
         );
     }
 
     // --- Helper Methods ---
+
+    // 为直接添加的实现生成内部 Type ID
+    private String generateInternalTypeId(DagNode<C, ?> implementation) {
+        // 使用类名 + @ + identityHashCode 保证唯一性，同时有一定可读性
+        return implementation.getClass().getName() + "@" + System.identityHashCode(implementation);
+    }
 
     private void printDagStructure() {
         if (!log.isInfoEnabled() || nodesInGraph.isEmpty()) {
@@ -221,10 +280,11 @@ public class DagDefinitionBuilder<C> {
 
         log.info("DAG '{}' Final Structure:", dagName);
         StringBuilder builder = new StringBuilder("\n");
-        builder.append(String.format("%-30s | %-30s | %-40s | %-40s\n",
-                "Instance Name", "Implementation Type", "Inputs (Slot <- Upstream)", "Outputs To (Downstream -> Slot)"));
+        // 调整列宽以适应可能更长的 Type ID
+        builder.append(String.format("%-30s | %-50s | %-40s | %-40s\n",
+                "Instance Name", "Implementation Type / ID", "Inputs (Slot <- Upstream)", "Outputs To (Downstream -> Slot)"));
         StringBuilder divider = new StringBuilder();
-        for (int i = 0; i < 155; i++) {
+        for (int i = 0; i < 175; i++) { // 增加分隔线长度
             divider.append("-");
         }
         builder.append(divider).append("\n");
@@ -238,6 +298,7 @@ public class DagDefinitionBuilder<C> {
             });
         });
 
+        // 按实例名称排序打印
         List<String> nodeNames = nodesInGraph.keySet().stream().sorted().collect(Collectors.toList());
 
         for (String instanceName : nodeNames) {
@@ -257,7 +318,8 @@ public class DagDefinitionBuilder<C> {
                 outputsStr = "None";
             }
 
-            builder.append(String.format("%-30s | %-30s | %-40s | %-40s\n",
+            // 打印 Type ID
+            builder.append(String.format("%-30s | %-50s | %-40s | %-40s\n",
                     instanceName, info.getTypeId(), inputsStr, outputsStr));
         }
         log.info(builder.toString());
@@ -274,16 +336,24 @@ public class DagDefinitionBuilder<C> {
     // 内部类，用于存储构建时的节点信息
     @Getter
     public static class NodeBuildInfo<C> {
-        private final String typeId;
+        private final String typeId; // 可以是注册的 ID 或内部生成的 ID
         private final DagNode<C, ?> implementation;
         private final Map<String, Class<?>> inputRequirements;
         private final Class<?> outputType;
 
         NodeBuildInfo(String typeId, DagNode<C, ?> implementation) {
-            this.typeId = typeId;
-            this.implementation = implementation;
-            this.inputRequirements = implementation.getInputRequirements(); // 获取输入需求
-            this.outputType = implementation.getPayloadType();      // 获取输出类型
+            this.typeId = Objects.requireNonNull(typeId, "NodeBuildInfo typeId cannot be null");
+            this.implementation = Objects.requireNonNull(implementation, "NodeBuildInfo implementation cannot be null");
+            // 从实现中获取输入输出信息
+            this.inputRequirements = implementation.getInputRequirements() != null
+                    ? Collections.unmodifiableMap(new HashMap<>(implementation.getInputRequirements())) // 确保不可变
+                    : Collections.emptyMap();
+            this.outputType = implementation.getPayloadType();
+            if (this.outputType == null) {
+                // 增加校验：节点实现必须提供有效的 Payload 类型
+                throw new IllegalArgumentException("DagNode implementation " + implementation.getClass().getName() +
+                        " (used for typeId '" + typeId + "') must return a non-null payload type from getPayloadType().");
+            }
         }
     }
 
@@ -306,7 +376,7 @@ public class DagDefinitionBuilder<C> {
             this.errorStrategy = errorStrategy;
             this.nodeInfoMap = nodeInfoMap; // 已是不可变 Map
             this.wiring = wiring;           // 已是深度不可变 Map
-            this.executionOrder = Collections.unmodifiableList(new ArrayList<>(executionOrder)); // 确保列表不可变
+            this.executionOrder = executionOrder; // 已是不可变 List
             this.allNodeNames = Collections.unmodifiableSet(nodeInfoMap.keySet());
         }
 

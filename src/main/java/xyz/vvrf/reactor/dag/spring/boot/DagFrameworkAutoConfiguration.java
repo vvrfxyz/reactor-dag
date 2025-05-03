@@ -44,8 +44,8 @@ public class DagFrameworkAutoConfiguration {
             ObjectProvider<Scheduler> nodeExecutionSchedulerProvider,
             ObjectProvider<List<DagMonitorListener>> monitorListenersProvider
     ) {
+        // StandardNodeExecutor 的构造函数未变，所以这里无需修改
         Scheduler scheduler = nodeExecutionSchedulerProvider.getIfAvailable(Schedulers::boundedElastic);
-        // 获取监听器列表，如果未定义则返回空列表
         List<DagMonitorListener> listeners = monitorListenersProvider.getIfAvailable(Collections::emptyList);
 
         return new StandardNodeExecutor(
@@ -68,6 +68,7 @@ public class DagFrameworkAutoConfiguration {
     public SpringDagEngine springDagEngine(
             StandardNodeExecutor nodeExecutor,
             DagFrameworkProperties properties) {
+        // SpringDagEngine 的构造函数已更新，这里调用也相应更新
         return new SpringDagEngine(nodeExecutor, properties);
     }
 }

@@ -10,7 +10,7 @@ import java.time.Duration;
 /**
  * DAG框架的配置属性类
  * 绑定 'dag' 前缀下的属性。
- * @author ruifeng.wen
+ * @author ruifeng.wen (modified)
  */
 @Getter
 @ConfigurationProperties(prefix = "dag")
@@ -37,21 +37,17 @@ public class DagFrameworkProperties {
     @Getter
     public static class Engine {
         /**
-         * 请求级别节点结果缓存的生存时间 (TTL)。
-         * 设置为 PT0S (Duration.ZERO) 可有效禁用基于时间的缓存。
-         */
-        private Duration cacheTtl = Duration.ofMinutes(5); // 默认值在此处定义
-
-        /**
          * DAG 执行期间处理节点的并发级别 (flatMap 的并发度)。
          * 默认为可用处理器的数量。
+         *
+         * 注意：移除了 cacheTtl 属性，因为请求级缓存的生命周期由请求本身控制，TTL 无意义。
          */
         @Min(1) // 可选：确保并发度至少为 1
         private int concurrencyLevel = Math.max(1, Runtime.getRuntime().availableProcessors()); // 默认值在此处定义
 
-        public void setCacheTtl(Duration cacheTtl) {
-            this.cacheTtl = cacheTtl;
-        }
+        // 移除了 cacheTtl 的 getter 和 setter
+        // public Duration getCacheTtl() { ... }
+        // public void setCacheTtl(Duration cacheTtl) { ... }
 
         public void setConcurrencyLevel(int concurrencyLevel) {
             // 可以在 setter 中添加校验逻辑，或者依赖 @Validated
@@ -61,10 +57,10 @@ public class DagFrameworkProperties {
 
     @Override
     public String toString() {
+        // 更新 toString 方法以反映移除的 cacheTtl
         return "DagFrameworkProperties{" +
                 "node={defaultTimeout=" + node.defaultTimeout +
-                "}, engine={cacheTtl=" + engine.cacheTtl +
-                ", concurrencyLevel=" + engine.concurrencyLevel +
+                "}, engine={concurrencyLevel=" + engine.concurrencyLevel +
                 "}}";
     }
 }

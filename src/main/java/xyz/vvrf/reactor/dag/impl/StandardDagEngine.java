@@ -9,7 +9,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 import xyz.vvrf.reactor.dag.core.*; // 引入核心接口
 
-import java.time.Duration;
+import java.time.Duration; // 保留 Duration 导入，可能其他地方仍需
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -20,30 +20,39 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 标准DAG执行引擎 - 负责协调节点实例执行并合并事件流。
  * 支持错误处理策略 (目前仅 FAIL_FAST)。
+ * 缓存机制已简化：移除请求级缓存的 TTL 配置。
  *
- * @author ruifeng.wen (Refactored)
+ * @author ruifeng.wen (Refactored & Modified)
  */
 @Slf4j
 public class StandardDagEngine {
 
     private final StandardNodeExecutor nodeExecutor;
-    private final Duration cacheTtl;
+    // 移除了 cacheTtl 字段
+    // private final Duration cacheTtl;
     private final int concurrencyLevel;
 
-    // 构造函数保持不变，但日志和内部逻辑会调整
-    public StandardDagEngine(StandardNodeExecutor nodeExecutor, Duration cacheTtl, int concurrencyLevel) {
+    /**
+     * 构造函数更新：不再接收 cacheTtl。
+     *
+     * @param nodeExecutor     节点执行器
+     * @param concurrencyLevel 并发级别
+     */
+    public StandardDagEngine(StandardNodeExecutor nodeExecutor, int concurrencyLevel) {
         this.nodeExecutor = Objects.requireNonNull(nodeExecutor, "NodeExecutor cannot be null");
-        this.cacheTtl = Objects.requireNonNull(cacheTtl, "Cache TTL cannot be null");
+        // 移除了 cacheTtl 的检查和赋值
+        // this.cacheTtl = Objects.requireNonNull(cacheTtl, "Cache TTL cannot be null");
         if (concurrencyLevel <= 0) {
             throw new IllegalArgumentException("Concurrency level must be positive.");
         }
         this.concurrencyLevel = concurrencyLevel;
-        // ... [日志] ...
-        log.info("StandardDagEngine initialized. Node result cache TTL: {}, Concurrency: {}", this.cacheTtl, this.concurrencyLevel);
+        log.info("StandardDagEngine initialized. Concurrency: {}", this.concurrencyLevel);
     }
-    public StandardDagEngine(StandardNodeExecutor nodeExecutor, Duration cacheTtl) {
-        this(nodeExecutor, cacheTtl, Math.max(1, Runtime.getRuntime().availableProcessors()));
-    }
+
+    // 保留旧构造函数（如果需要向后兼容或有其他用途），但标记为弃用或移除
+    // public StandardDagEngine(StandardNodeExecutor nodeExecutor, Duration cacheTtl, int concurrencyLevel) { ... }
+    // public StandardDagEngine(StandardNodeExecutor nodeExecutor, Duration cacheTtl) { ... }
+
 
     /**
      * 执行指定 DAG 定义并返回合并后的事件流。
@@ -78,6 +87,7 @@ public class StandardDagEngine {
 
         // 为当前请求创建节点结果缓存 (Mono<NodeResult>)
         // Key: instanceName, Value: Mono<NodeResult<C, ?>>
+        // 这个缓存用于在单次执行中共享节点的 Mono 实例 (通常是经过 .cache() 的 Mono)
         final Cache<String, Mono<NodeResult<C, ?>>> requestCache = createRequestCache();
         // 用于 FAIL_FAST 策略，标记是否已发生错误
         final AtomicBoolean errorOccurred = new AtomicBoolean(false);
@@ -94,14 +104,15 @@ public class StandardDagEngine {
                         // 从 DagDefinition 获取类型
                         Class<?> payloadType = dagDefinition.getNodeOutputType(instanceName)
                                 .orElseThrow(() -> new IllegalStateException("Cannot determine payload type for skipped node " + instanceName));
+                        // 注意：这里创建的是即时完成的 Mono，不会放入 requestCache
                         return Mono.just(NodeResult.skipped(initialContext, payloadType)); // 返回跳过结果
                     }
 
-                    // 获取或创建节点的执行 Mono
+                    // 获取或创建节点的执行 Mono (此方法内部会处理缓存)
                     return nodeExecutor.getNodeExecutionMono(
                             instanceName,
                             initialContext,
-                            requestCache,
+                            requestCache, // 传递缓存给执行器
                             dagDefinition,
                             actualRequestId
                     ).doOnNext(result -> { // 检查结果，更新错误标志
@@ -111,14 +122,16 @@ public class StandardDagEngine {
                                         actualRequestId, dagName, instanceName);
                             }
                         }
-                    }).doOnError(err -> { // 如果 Mono 本身出错
+                    }).doOnError(err -> { // 如果 Mono 本身出错 (例如，准备输入时)
                         if (errorStrategy == ErrorHandlingStrategy.FAIL_FAST) {
                             if (errorOccurred.compareAndSet(false, true)) {
-                                log.error("[RequestId: {}] DAG '{}': Error during execution of node '{}' mono. Activating FAIL_FAST.",
+                                log.error("[RequestId: {}] DAG '{}': Error during execution setup for node '{}'. Activating FAIL_FAST.",
                                         actualRequestId, dagName, instanceName, err);
                             }
                         }
-                        // 让错误继续传播，以便 onErrorResume 处理
+                        // 让错误继续传播，以便 onErrorResume 处理 (如果顶层有的话)
+                        // 或者在这里转换为失败的 NodeResult Mono?
+                        // 保持传播，让 flatMapSequential 的错误处理机制接管
                     });
                 }, concurrencyLevel); // 并发度应用于 flatMapSequential 的内部订阅
 
@@ -151,21 +164,20 @@ public class StandardDagEngine {
                 .doFinally(signal -> cleanupCache(requestCache, actualRequestId, dagName, signal)); // 清理缓存
     }
 
-    // --- Helper Methods (generateRequestId, createRequestCache, cleanupCache) ---
-    // 这些方法基本保持不变，但 createRequestCache 的 Value 类型变为 Mono<NodeResult<C, ?>>
+    // --- Helper Methods ---
 
     private String generateRequestId() {
         return UUID.randomUUID().toString().substring(0, 8);
     }
 
+    /**
+     * 创建请求级缓存。
+     * 不再设置 TTL，因为缓存生命周期与请求绑定。
+     */
     private <C> Cache<String, Mono<NodeResult<C, ?>>> createRequestCache() {
-        Caffeine<Object, Object> builder = Caffeine.newBuilder().maximumSize(1000);
-        if (!cacheTtl.isNegative() && !cacheTtl.isZero()) {
-            builder.expireAfterWrite(this.cacheTtl);
-        } else {
-            builder.expireAfterWrite(Duration.ZERO); // 禁用或立即过期
-        }
-        log.debug("Created request cache with TTL: {}", cacheTtl);
+        // 移除 TTL 配置
+        Caffeine<Object, Object> builder = Caffeine.newBuilder().maximumSize(1000); // 限制大小防止内存泄漏
+        log.debug("Created request cache (no TTL, lifecycle bound to request).");
         return builder.build();
     }
 
@@ -177,8 +189,8 @@ public class StandardDagEngine {
         long cacheSize = requestCache.estimatedSize();
         log.debug("[RequestId: {}] DAG '{}' execution finished (Signal: {}). Cleaning up request cache (Size: {}).",
                 requestId, dagName, signal, cacheSize);
-        requestCache.invalidateAll();
-        requestCache.cleanUp();
+        requestCache.invalidateAll(); // 使所有缓存条目失效
+        requestCache.cleanUp();      // 执行清理操作
         log.debug("[RequestId: {}] DAG '{}' request cache cleaned.", requestId, dagName);
     }
 }

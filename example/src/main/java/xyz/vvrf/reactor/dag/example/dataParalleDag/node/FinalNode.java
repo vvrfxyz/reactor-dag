@@ -1,10 +1,12 @@
 // file: example/dataParalleDag/node/FinalNode.java
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
-// Removed @Component
+import lombok.extern.slf4j.Slf4j; // Import Slf4j
+import reactor.core.publisher.Flux; // Import Flux
 import reactor.core.publisher.Mono;
 import xyz.vvrf.reactor.dag.core.DagNode;
-import xyz.vvrf.reactor.dag.core.InputAccessor; // Use InputAccessor
+import xyz.vvrf.reactor.dag.core.Event; // Import Event
+import xyz.vvrf.reactor.dag.core.InputAccessor;
 import xyz.vvrf.reactor.dag.core.NodeResult;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 
@@ -13,12 +15,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
- * 最终节点逻辑，聚合来自多个并行输入的结果。
- * 声明需要 "resultA", "resultB", "resultC" 三个 String 输入。
+ * 最终节点逻辑，聚合结果。
+ * 使用 SLF4j 日志并产生一个包含聚合结果的事件。
  */
-public class FinalNode implements DagNode<ParalleContext, String> { // Removed Event Type <Void>
+@Slf4j // Add Slf4j logging
+public class FinalNode implements DagNode<ParalleContext, String> {
 
-    // Define logical input slot names
     private static final String INPUT_A = "resultA";
     private static final String INPUT_B = "resultB";
     private static final String INPUT_C = "resultC";
@@ -28,7 +30,6 @@ public class FinalNode implements DagNode<ParalleContext, String> { // Removed E
         return String.class;
     }
 
-    // Declare multiple input requirements
     @Override
     public Map<String, Class<?>> getInputRequirements() {
         return Map.of(
@@ -38,48 +39,61 @@ public class FinalNode implements DagNode<ParalleContext, String> { // Removed E
         );
     }
 
-    /**
-     * 执行最终节点逻辑，聚合结果。
-     *
-     * @param context 上下文
-     * @param inputs  输入访问器
-     * @return 结果 Mono
-     */
     @Override
-    public Mono<NodeResult<ParalleContext, String>> execute(ParalleContext context, InputAccessor<ParalleContext> inputs) { // Use InputAccessor
+    public Mono<NodeResult<ParalleContext, String>> execute(ParalleContext context, InputAccessor<ParalleContext> inputs) {
         return Mono.fromCallable(() -> {
             String threadName = Thread.currentThread().getName();
-            System.out.println("Executing " + this.getClass().getSimpleName() + " logic on thread: " + threadName);
+            // Use logger
+            log.info("Executing {} logic on thread: {}", this.getClass().getSimpleName(), threadName);
 
-            // Aggregate results using InputAccessor and declared slot names
-            String aggregatedPayloads = getInputRequirements().keySet().stream() // Iterate over declared input slots
+            // Aggregate results
+            String aggregatedPayloads = getInputRequirements().keySet().stream()
                     .map(inputSlotName -> {
                         String payloadStr = inputs.getPayload(inputSlotName, String.class)
                                 .orElseGet(() -> {
-                                    if (inputs.isInputFailed(inputSlotName)) return "FAILED";
-                                    if (inputs.isInputSkipped(inputSlotName)) return "SKIPPED";
-                                    return "EMPTY"; // Input available but no payload (or not available)
+                                    if (inputs.isInputFailed(inputSlotName)) {
+                                        log.warn("{} detected FAILED input for slot '{}'", this.getClass().getSimpleName(), inputSlotName);
+                                        return "FAILED";
+                                    }
+                                    if (inputs.isInputSkipped(inputSlotName)) {
+                                        log.warn("{} detected SKIPPED input for slot '{}'", this.getClass().getSimpleName(), inputSlotName);
+                                        return "SKIPPED";
+                                    }
+                                    log.warn("{} detected EMPTY or unavailable input for slot '{}'", this.getClass().getSimpleName(), inputSlotName);
+                                    return "EMPTY";
                                 });
-                        return inputSlotName + ": [" + payloadStr + "]"; // Use slot name in output
+                        return inputSlotName + ": [" + payloadStr + "]";
                     })
                     .collect(Collectors.joining("; "));
 
-            System.out.println(this.getClass().getSimpleName() + " logic received aggregated results: " + aggregatedPayloads);
+            // Use logger (debug for detailed aggregation result)
+            log.debug("{} logic received aggregated results: {}", this.getClass().getSimpleName(), aggregatedPayloads);
 
             try {
                 TimeUnit.MILLISECONDS.sleep(20);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return NodeResult.failure(context, e, String.class); // Pass payloadType
+                log.error("Interrupted during sleep in {}", this.getClass().getSimpleName(), e);
+                return NodeResult.failure(context, e, String.class);
             }
 
             String resultPayload = this.getClass().getSimpleName() + " finished successfully on " + threadName + ". Aggregated: " + aggregatedPayloads;
-            System.out.println(this.getClass().getSimpleName() + " logic finished.");
+            log.info("{} logic finished.", this.getClass().getSimpleName());
 
-            return NodeResult.success(context, resultPayload, String.class); // Pass payloadType
+            // Create an event with the aggregated data
+            Event<Object> aggregationEvent = Event.builder()
+                    .event("FINAL_AGGREGATION")
+                    .data(aggregatedPayloads) // Event data is the aggregated string
+                    .comment("Final aggregation completed.")
+                    .build();
+
+            // Return success with payload and event flux
+            return NodeResult.success(context, resultPayload, Flux.just(aggregationEvent), String.class); // Pass event flux
+
         }).onErrorResume(error -> {
-            System.err.println("Error executing " + this.getClass().getSimpleName() + " logic: " + error.getMessage());
-            return Mono.just(NodeResult.failure(context, error, String.class)); // Pass payloadType
+            // Use logger
+            log.error("Error executing {} logic: {}", this.getClass().getSimpleName(), error.getMessage(), error);
+            return Mono.just(NodeResult.failure(context, error, String.class));
         });
     }
 }

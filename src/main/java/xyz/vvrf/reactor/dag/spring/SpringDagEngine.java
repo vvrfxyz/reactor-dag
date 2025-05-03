@@ -1,10 +1,11 @@
 package xyz.vvrf.reactor.dag.spring;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired; // 保留 Autowired 以便 Spring 识别构造函数注入
-// 移除: import org.springframework.beans.factory.annotation.Value;
+// 移除未使用的 Autowired
+// import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.codec.ServerSentEvent;
-import org.springframework.stereotype.Service;
+// 移除未使用的 Service 注解 (如果此类不由 Spring 直接扫描创建，则不需要)
+// import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import xyz.vvrf.reactor.dag.core.DagDefinition;
 import xyz.vvrf.reactor.dag.core.Event; // 正确导入 Event
@@ -41,10 +42,10 @@ public class SpringDagEngine {
 
         // 使用注入的执行器和从 DagFrameworkProperties 对象读取的属性
         // 来创建内部的 StandardDagEngine 实例。
+        // 注意：StandardDagEngine 构造函数不再需要 cacheTtl
         this.dagEngine = new StandardDagEngine(
                 nodeExecutor,
-                properties.getEngine().getCacheTtl(),
-                properties.getEngine().getConcurrencyLevel()
+                properties.getEngine().getConcurrencyLevel() // 只传递并发级别
         );
 
         log.info("SpringDagEngine 初始化完成，使用的配置: {}", properties); // 记录使用的配置
@@ -69,7 +70,6 @@ public class SpringDagEngine {
         Flux<Event<?>> coreEventFlux = dagEngine.execute(initialContext, requestId, dagDefinition);
 
         // 将核心 Event 流转换为 ServerSentEvent 流
-        // 可以直接使用 EventAdapter 的静态方法，如果倾向于注入，则注入 EventAdapter Bean
         return EventAdapter.toServerSentEvents(coreEventFlux);
     }
 
