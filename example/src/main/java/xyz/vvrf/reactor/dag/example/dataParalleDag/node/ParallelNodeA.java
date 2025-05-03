@@ -1,80 +1,80 @@
+// file: example/dataParalleDag/node/ParallelNodeA.java
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
-import org.springframework.stereotype.Component;
+// Removed @Component
 import reactor.core.publisher.Mono;
 import xyz.vvrf.reactor.dag.core.DagNode;
-import xyz.vvrf.reactor.dag.core.DependencyAccessor; // Import Accessor
-// Removed DependencyDescriptor import
+import xyz.vvrf.reactor.dag.core.InputAccessor; // Use InputAccessor
 import xyz.vvrf.reactor.dag.core.NodeResult;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 
-// Removed List import
-// Removed Map import
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * reactor-dag
- * A node designed to run in parallel with other similar nodes.
- * Depends on FirstNode.
- * Uses DependencyAccessor.
- *
- * @author Your Name (modified)
- * @date Today's Date (modified)
+ * 并行节点 A 的逻辑。
+ * 声明需要一个名为 "startData" 的 String 类型输入。
  */
-@Component
-public class ParallelNodeA implements DagNode<ParalleContext, String, Void> {
+public class ParallelNodeA implements DagNode<ParalleContext, String> { // Removed Event Type <Void>
+
+    private static final String INPUT_SLOT_NAME = "startData"; // Define logical input slot name
 
     @Override
     public Class<String> getPayloadType() {
         return String.class;
     }
 
+    // Declare input requirement
     @Override
-    public Class<Void> getEventType() {
-        return Void.class;
+    public Map<String, Class<?>> getInputRequirements() {
+        return Map.of(INPUT_SLOT_NAME, String.class); // Requires a String input named "startData"
     }
 
     /**
-     * Executes the parallel node A logic.
+     * 执行并行节点 A 的逻辑。
      *
-     * @param context      The parallel context.
-     * @param dependencies Accessor for dependency results. <--- Updated Javadoc
-     * @return A Mono containing the result.
+     * @param context 上下文
+     * @param inputs  输入访问器
+     * @return 结果 Mono
      */
     @Override
-    public Mono<NodeResult<ParalleContext, String, Void>> execute(ParalleContext context, DependencyAccessor<ParalleContext> dependencies) { // <--- Signature changed
+    public Mono<NodeResult<ParalleContext, String>> execute(ParalleContext context, InputAccessor<ParalleContext> inputs) { // Use InputAccessor
 
-        // Example of accessing dependency using the accessor
-        dependencies.getPayload("FirstNode", String.class) // Use accessor with type safety
-                .ifPresent(payload -> System.out.println(this.getClass().getSimpleName() + " received payload from FirstNode: " + payload));
+        // Access input using the logical slot name
+        inputs.getPayload(INPUT_SLOT_NAME, String.class)
+                .ifPresent(payload -> System.out.println(this.getClass().getSimpleName() + " logic received payload from input '" + INPUT_SLOT_NAME + "': " + payload));
 
-        // Check if FirstNode succeeded (optional)
-        if (!dependencies.isSuccess("FirstNode")) {
-            System.out.println(this.getClass().getSimpleName() + " notes that FirstNode did not succeed.");
-            // Potentially alter behavior based on dependency failure
+        // Check if the input was available and successful (more robust check)
+        if (!inputs.isInputAvailable(INPUT_SLOT_NAME)) {
+            // Check if it failed or was skipped
+            if (inputs.isInputFailed(INPUT_SLOT_NAME)) {
+                System.out.println(this.getClass().getSimpleName() + " notes that input '" + INPUT_SLOT_NAME + "' failed.");
+            } else if (inputs.isInputSkipped(INPUT_SLOT_NAME)) {
+                System.out.println(this.getClass().getSimpleName() + " notes that input '" + INPUT_SLOT_NAME + "' was skipped.");
+            } else {
+                System.out.println(this.getClass().getSimpleName() + " notes that input '" + INPUT_SLOT_NAME + "' was not available (no payload).");
+            }
+            // Potentially alter behavior or return skipped/failure
         }
 
         return Mono.fromCallable(() -> {
             String threadName = Thread.currentThread().getName();
-            System.out.println("Executing " + this.getClass().getSimpleName() + " on thread: " + threadName + " (depends on FirstNode)");
+            System.out.println("Executing " + this.getClass().getSimpleName() + " logic on thread: " + threadName + " (requires input '" + INPUT_SLOT_NAME + "')");
 
-            // Simulate significant work
             try {
-                TimeUnit.MILLISECONDS.sleep(500); // Longer delay
+                TimeUnit.MILLISECONDS.sleep(500);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return NodeResult.failure(
-                        context, e, this);
+                return NodeResult.failure(context, e, String.class); // Pass payloadType
             }
 
             String resultPayload = this.getClass().getSimpleName() + " executed successfully on " + threadName;
-            System.out.println(this.getClass().getSimpleName() + " finished.");
+            System.out.println(this.getClass().getSimpleName() + " logic finished.");
 
-            return NodeResult.success(context, resultPayload, this);
+            return NodeResult.success(context, resultPayload, String.class); // Pass payloadType
         }).onErrorResume(error -> {
-            System.err.println("Error executing " + this.getClass().getSimpleName() + ": " + error.getMessage());
-            return Mono.just(NodeResult.failure(
-                    context, error, this));
+            System.err.println("Error executing " + this.getClass().getSimpleName() + " logic: " + error.getMessage());
+            return Mono.just(NodeResult.failure(context, error, String.class)); // Pass payloadType
         });
     }
 }

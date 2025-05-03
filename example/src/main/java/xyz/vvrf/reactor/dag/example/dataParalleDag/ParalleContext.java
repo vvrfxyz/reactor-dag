@@ -1,3 +1,4 @@
+// file: example/dataParalleDag/ParalleContext.java
 package xyz.vvrf.reactor.dag.example.dataParalleDag;
 
 import lombok.Data;
@@ -10,5 +11,5 @@ import lombok.Data;
  */
 @Data
 public class ParalleContext {
-
+    // 可以根据需要添加字段
 }

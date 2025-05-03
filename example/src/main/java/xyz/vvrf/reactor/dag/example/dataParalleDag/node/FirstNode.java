@@ -1,64 +1,65 @@
+// file: example/dataParalleDag/node/FirstNode.java
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
-import org.springframework.stereotype.Component;
+// Removed @Component
 import reactor.core.publisher.Mono;
 import xyz.vvrf.reactor.dag.core.DagNode;
-import xyz.vvrf.reactor.dag.core.DependencyAccessor;
+import xyz.vvrf.reactor.dag.core.InputAccessor; // Use InputAccessor
 import xyz.vvrf.reactor.dag.core.NodeResult;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 
+import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * reactor-dag
- * The starting node of the DAG.
- * Uses DependencyAccessor (though doesn't access dependencies).
- *
- * @author ruifeng.wen
- * @date 4/19/25 (modified)
+ * 起始节点逻辑。
+ * 不再是 Spring 组件。
+ * 使用 InputAccessor (虽然此节点无输入)。
  */
-@Component
-public class FirstNode implements DagNode<ParalleContext, String, Void> {
+public class FirstNode implements DagNode<ParalleContext, String> { // Removed Event Type <Void>
 
     @Override
     public Class<String> getPayloadType() {
         return String.class;
     }
 
+    // No inputs required
     @Override
-    public Class<Void> getEventType() {
-        return Void.class;
+    public Map<String, Class<?>> getInputRequirements() {
+        return Collections.emptyMap();
     }
 
     /**
-     * Executes the first node logic.
+     * 执行起始节点逻辑。
      *
-     * @param context      The parallel context.
-     * @param dependencies Accessor for dependency results (unused in this node). <--- Updated Javadoc
-     * @return A Mono containing the result.
+     * @param context 上下文
+     * @param inputs  输入访问器 (此节点未使用)
+     * @return 结果 Mono
      */
     @Override
-    public Mono<NodeResult<ParalleContext, String, Void>> execute(ParalleContext context, DependencyAccessor<ParalleContext> dependencies) {
+    public Mono<NodeResult<ParalleContext, String>> execute(ParalleContext context, InputAccessor<ParalleContext> inputs) { // Use InputAccessor
         return Mono.fromCallable(() -> {
             String threadName = Thread.currentThread().getName();
-            System.out.println("Executing " + this.getClass().getSimpleName() + " on thread: " + threadName);
+            System.out.println("Executing " + this.getClass().getSimpleName() + " logic on thread: " + threadName);
 
-            // Simulate some work
             try {
-                TimeUnit.MILLISECONDS.sleep(50); // Small delay
+                TimeUnit.MILLISECONDS.sleep(50);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return NodeResult.failure(context, e, this);
+                // Pass payloadType explicitly
+                return NodeResult.failure(context, e, String.class);
             }
 
             String resultPayload = this.getClass().getSimpleName() + " executed successfully on " + threadName;
-            System.out.println(this.getClass().getSimpleName() + " finished.");
+            System.out.println(this.getClass().getSimpleName() + " logic finished.");
 
-            return NodeResult.success(context, resultPayload, this);
+            // Pass payloadType explicitly
+            return NodeResult.success(context, resultPayload, String.class);
         }).onErrorResume(error -> {
-            System.err.println("Error executing " + this.getClass().getSimpleName() + ": " + error.getMessage());
-            return Mono.just(NodeResult.<ParalleContext, String, Void>failure(
-                    context, error, this));
+            System.err.println("Error executing " + this.getClass().getSimpleName() + " logic: " + error.getMessage());
+            // Pass payloadType explicitly
+            return Mono.just(NodeResult.failure(context, error, String.class));
         });
     }
 }

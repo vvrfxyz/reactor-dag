@@ -10,7 +10,9 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
-import xyz.vvrf.reactor.dag.example.dataParalleDag.DataParalleDag;
+import xyz.vvrf.reactor.dag.builder.DagDefinitionBuilder;
+import xyz.vvrf.reactor.dag.core.DagDefinition;
+import xyz.vvrf.reactor.dag.example.dataParalleDag.DataParalleDagConfiguration;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 import xyz.vvrf.reactor.dag.spring.SpringDagEngine;
 
@@ -32,7 +34,7 @@ public class DagUsageExample {
     private SpringDagEngine dagEngine;
 
     @Autowired
-    private DataParalleDag dataParalleDag;
+    private DagDefinition<ParalleContext> dataParalleDag;
 
     /**
      * 处理数据的API端点，以SSE方式返回处理过程
