@@ -17,6 +17,7 @@ import java.util.stream.Collectors;
  * 用于以编程方式构建不可变的 DagDefinition 数据结构。
  * 需要一个 NodeRegistry 来验证节点类型和插槽。
  * 允许实例特定的配置（重试、超时）。
+ * 新增：构建成功后可生成 DOT 图形描述代码。
  *
  * @param <C> 上下文类型。
  * @author Refactored
@@ -227,6 +228,7 @@ public class DagDefinitionBuilder<C> {
     /**
      * 构建最终的、不可变的 DagDefinition 数据结构。
      * 执行图验证和拓扑排序。
+     * 成功构建后，会生成并打印 DOT 图形描述代码。
      *
      * @return 不可变的 DagDefinition 实例。
      * @throws IllegalStateException 如果图验证失败（例如，循环、缺少必需输入）。
@@ -239,11 +241,13 @@ public class DagDefinitionBuilder<C> {
         for (Map.Entry<String, NodeDefinition> entry : nodeDefinitions.entrySet()) {
             finalNodeDefinitions.put(entry.getKey(), entry.getValue().makeImmutable());
         }
+        // 创建边的不可变副本，以防万一
+        List<EdgeDefinition<C>> finalEdgeDefinitions = Collections.unmodifiableList(new ArrayList<>(edgeDefinitions));
 
 
         // 验证图结构 (需要 NodeRegistry 提供元数据)
         try {
-            GraphUtils.validateGraphStructure(finalNodeDefinitions, edgeDefinitions, nodeRegistry, dagName);
+            GraphUtils.validateGraphStructure(finalNodeDefinitions, finalEdgeDefinitions, nodeRegistry, dagName);
         } catch (IllegalStateException e) {
             log.error("DAG '{}' 构建期间验证失败: {}", dagName, e.getMessage());
             throw e;
@@ -251,7 +255,7 @@ public class DagDefinitionBuilder<C> {
 
         // 检测循环
         try {
-            GraphUtils.detectCycles(finalNodeDefinitions.keySet(), edgeDefinitions, dagName);
+            GraphUtils.detectCycles(finalNodeDefinitions.keySet(), finalEdgeDefinitions, dagName);
         } catch (IllegalStateException e) {
             log.error("DAG '{}' 构建期间循环检测失败: {}", dagName, e.getMessage());
             throw e;
@@ -263,15 +267,25 @@ public class DagDefinitionBuilder<C> {
             if (finalNodeDefinitions.isEmpty()) {
                 executionOrder = Collections.emptyList();
             } else {
-                executionOrder = GraphUtils.topologicalSort(finalNodeDefinitions.keySet(), edgeDefinitions, dagName);
+                executionOrder = GraphUtils.topologicalSort(finalNodeDefinitions.keySet(), finalEdgeDefinitions, dagName);
             }
         } catch (IllegalStateException e) {
             log.error("DAG '{}' 构建期间拓扑排序失败: {}", dagName, e.getMessage());
             throw e;
         }
 
-        log.info("DAG '{}' 构建成功。{} 个节点, {} 条边。执行顺序: {}", dagName, finalNodeDefinitions.size(), edgeDefinitions.size(), executionOrder);
-        printDagStructure(finalNodeDefinitions); // 传递最终定义用于打印
+        log.info("DAG '{}' 构建成功。{} 个节点, {} 条边。执行顺序: {}", dagName, finalNodeDefinitions.size(), finalEdgeDefinitions.size(), executionOrder);
+        printDagStructure(finalNodeDefinitions); // 打印文本结构
+
+        // --- 新增：生成并打印 DOT 代码 ---
+        try {
+            String dotCode = generateDotRepresentation(finalNodeDefinitions, finalEdgeDefinitions);
+            log.info("DAG '{}' DOT 图形描述:\n--- DOT BEGIN ---\n{}\n--- DOT END ---", dagName, dotCode);
+        } catch (Exception e) {
+            // 捕获生成 DOT 代码时可能发生的任何异常，避免影响 build() 的主要流程
+            log.error("DAG '{}': 生成 DOT 图形描述时发生错误: {}", dagName, e.getMessage(), e);
+        }
+        // --- 结束新增 ---
 
         // 创建不可变的 DagDefinition 实例
         return new DefaultDagDefinition<>(
@@ -279,8 +293,8 @@ public class DagDefinitionBuilder<C> {
                 contextType,
                 errorStrategy,
                 finalNodeDefinitions, // 已经是不可变 Map
-                Collections.unmodifiableList(new ArrayList<>(edgeDefinitions)), // 使边列表不可变
-                executionOrder // 已经是不可变列表
+                finalEdgeDefinitions, // 已经是不可变 List
+                executionOrder        // 已经是不可变列表
         );
     }
 
@@ -298,7 +312,7 @@ public class DagDefinitionBuilder<C> {
         if (!log.isInfoEnabled() || finalNodeDefs.isEmpty()) {
             return;
         }
-        log.info("DAG '{}' 最终结构:", dagName);
+        log.info("DAG '{}' 最终结构 (文本):", dagName);
         StringBuilder builder = new StringBuilder("\n节点:\n");
         builder.append(String.format("%-30s | %-40s | %s\n", "实例名称", "类型 ID", "配置"));
         builder
@@ -318,6 +332,78 @@ public class DagDefinitionBuilder<C> {
 
         log.info(builder.toString());
     }
+
+    /**
+     * 生成 DAG 的 DOT 图形描述字符串。
+     *
+     * @param nodeDefs 最终的节点定义 Map
+     * @param edgeDefs 最终的边定义 List
+     * @return DOT 格式的字符串
+     */
+    private String generateDotRepresentation(Map<String, NodeDefinition> nodeDefs, List<EdgeDefinition<C>> edgeDefs) {
+        StringBuilder dot = new StringBuilder();
+        String safeDagName = escapeDotString(dagName); // 对 DAG 名称进行转义
+
+        dot.append(String.format("digraph \"%s\" {\n", safeDagName));
+        dot.append("  rankdir=LR; // 从左到右布局\n");
+        dot.append(String.format("  label=\"%s\";\n", safeDagName));
+        dot.append("  node [shape=box, style=rounded];\n"); // 默认节点样式
+
+        // 定义节点
+        for (NodeDefinition node : nodeDefs.values()) {
+            String instanceName = escapeDotString(node.getInstanceName());
+            String typeId = escapeDotString(node.getNodeTypeId());
+            // 节点标签：实例名 + 类型ID
+            String nodeLabel = String.format("%s\\n(%s)", instanceName, typeId);
+            dot.append(String.format("  \"%s\" [label=\"%s\"];\n", instanceName, nodeLabel));
+        }
+
+        // 定义边
+        for (EdgeDefinition<C> edge : edgeDefs) {
+            String upName = escapeDotString(edge.getUpstreamInstanceName());
+            String downName = escapeDotString(edge.getDownstreamInstanceName());
+            String outSlot = escapeDotString(edge.getOutputSlotId());
+            String inSlot = escapeDotString(edge.getInputSlotId());
+            Condition<C> condition = edge.getCondition();
+
+            // 边标签：输出槽 -> 输入槽
+            String edgeLabel = String.format("%s -> %s", outSlot, inSlot);
+            List<String> attributes = new ArrayList<>();
+            attributes.add(String.format("label=\"%s\"", edgeLabel));
+
+            // 如果有条件，添加条件信息到标签，并使用虚线样式
+            if (condition != Condition.alwaysTrue()) {
+                String conditionName = escapeDotString(condition.getClass().getSimpleName());
+                // 更新标签以包含条件
+                edgeLabel = String.format("%s\\n[C: %s]", edgeLabel, conditionName);
+                attributes.set(0, String.format("label=\"%s\"", edgeLabel)); // 替换原标签
+                attributes.add("style=dashed");
+                attributes.add("color=blue"); // 可选：用颜色区分条件边
+            }
+
+            dot.append(String.format("  \"%s\" -> \"%s\" [%s];\n",
+                    upName, downName, String.join(", ", attributes)));
+        }
+
+        dot.append("}\n");
+        return dot.toString();
+    }
+
+    /**
+     * 对字符串进行转义，使其在 DOT 标签或 ID 中安全使用。
+     * 主要处理双引号和反斜杠。
+     *
+     * @param input 输入字符串
+     * @return 转义后的字符串
+     */
+    private String escapeDotString(String input) {
+        if (input == null) {
+            return "";
+        }
+        // 替换反斜杠为双反斜杠，替换双引号为反斜杠+双引号
+        return input.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
 
     // 内部类，表示最终的不可变 DAG 定义实现
     // (从先前版本复制，确保使用最终的不可变 maps/lists)
