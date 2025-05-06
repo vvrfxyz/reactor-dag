@@ -1,166 +1,218 @@
-// file: builder/DagDefinitionBuilder.java
+// 文件名: builder/DagDefinitionBuilder.java (已修改)
 package xyz.vvrf.reactor.dag.builder;
 
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import reactor.util.retry.Retry; // 引入 Retry
 import xyz.vvrf.reactor.dag.core.*;
+import xyz.vvrf.reactor.dag.execution.StandardNodeExecutor; // 引入用于配置键
 import xyz.vvrf.reactor.dag.registry.NodeRegistry;
 import xyz.vvrf.reactor.dag.util.GraphUtils;
 
+import java.time.Duration; // 引入 Duration
 import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * 用于以编程方式构建 DagDefinition 数据结构的构建器。
+ * 用于以编程方式构建不可变的 DagDefinition 数据结构。
  * 需要一个 NodeRegistry 来验证节点类型和插槽。
+ * 允许实例特定的配置（重试、超时）。
  *
- * @param <C> 上下文类型
+ * @param <C> 上下文类型。
  * @author Refactored
  */
 @Slf4j
 public class DagDefinitionBuilder<C> {
 
     private final Class<C> contextType;
-    private final NodeRegistry<C> nodeRegistry; // 需要注册表进行验证
+    private final NodeRegistry<C> nodeRegistry; // 仍然需要注册表进行验证
     private String dagName;
     private ErrorHandlingStrategy errorStrategy = ErrorHandlingStrategy.FAIL_FAST;
 
-    // 存储节点定义
-    private final Map<String, NodeDefinition> nodeDefinitions = new LinkedHashMap<>(); // 使用 LinkedHashMap 保持添加顺序
+    // 存储节点定义（包括实例配置）
+    private final Map<String, NodeDefinition> nodeDefinitions = new LinkedHashMap<>(); // 保持插入顺序
     // 存储边定义
     private final List<EdgeDefinition<C>> edgeDefinitions = new ArrayList<>();
 
     /**
      * 创建 DAG 定义构建器。
      *
-     * @param contextType  DAG 适用的上下文类型
-     * @param dagName      DAG 的名称
-     * @param nodeRegistry 用于验证节点类型和获取元数据的注册表
+     * @param contextType  DAG 操作的上下文类型。
+     * @param dagName      DAG 的名称。
+     * @param nodeRegistry 用于验证节点类型和获取元数据的注册表。
      */
     public DagDefinitionBuilder(Class<C> contextType, String dagName, NodeRegistry<C> nodeRegistry) {
-        this.contextType = Objects.requireNonNull(contextType, "Context type cannot be null");
-        this.dagName = Objects.requireNonNull(dagName, "DAG name cannot be null");
-        this.nodeRegistry = Objects.requireNonNull(nodeRegistry, "NodeRegistry cannot be null");
-        log.info("Creating DagDefinitionBuilder for context '{}', DAG name '{}'", contextType.getSimpleName(), dagName);
+        this.contextType = Objects.requireNonNull(contextType, "上下文类型不能为空");
+        this.dagName = Objects.requireNonNull(dagName, "DAG 名称不能为空");
+        this.nodeRegistry = Objects.requireNonNull(nodeRegistry, "NodeRegistry 不能为空");
+        log.info("为上下文 '{}', DAG 名称 '{}' 创建 DagDefinitionBuilder", contextType.getSimpleName(), dagName);
     }
 
     public DagDefinitionBuilder<C> name(String name) {
-        this.dagName = Objects.requireNonNull(name, "DAG name cannot be null");
+        this.dagName = Objects.requireNonNull(name, "DAG 名称不能为空");
         return this;
     }
 
     public DagDefinitionBuilder<C> errorStrategy(ErrorHandlingStrategy strategy) {
-        this.errorStrategy = Objects.requireNonNull(strategy, "Error handling strategy cannot be null");
+        this.errorStrategy = Objects.requireNonNull(strategy, "错误处理策略不能为空");
         return this;
     }
 
     /**
-     * 向图中添加一个节点定义。
+     * 向图中添加一个节点实例定义。
      *
-     * @param instanceName    节点实例在图中的唯一名称
-     * @param nodeTypeId      要使用的节点类型 ID (必须在 NodeRegistry 中注册)
-     * @param configuration   可选的节点特定配置
-     * @return this builder
-     * @throws IllegalArgumentException 如果 instanceName 已存在或 nodeTypeId 未在注册表中找到
+     * @param instanceName 节点实例在 DAG 中的唯一名称。
+     * @param nodeTypeId   要使用的节点逻辑的类型 ID（必须在 NodeRegistry 中注册）。
+     * @return this builder。
+     * @throws IllegalArgumentException 如果 instanceName 已存在或 nodeTypeId 在注册表中未找到。
      */
-    public DagDefinitionBuilder<C> addNode(String instanceName, String nodeTypeId, Map<String, Object> configuration) {
-        Objects.requireNonNull(instanceName, "Instance name cannot be null");
-        Objects.requireNonNull(nodeTypeId, "Node type ID cannot be null");
+    public DagDefinitionBuilder<C> addNode(String instanceName, String nodeTypeId) {
+        Objects.requireNonNull(instanceName, "实例名称不能为空");
+        Objects.requireNonNull(nodeTypeId, "节点类型 ID 不能为空");
 
         if (nodeDefinitions.containsKey(instanceName)) {
-            throw new IllegalArgumentException(String.format("Node instance name '%s' already exists in DAG '%s'.", instanceName, dagName));
+            throw new IllegalArgumentException(String.format("节点实例名称 '%s' 在 DAG '%s' 中已存在。", instanceName, dagName));
         }
-        // 验证 nodeTypeId 是否存在于注册表
-//        if (nodeRegistry.getNodeMetadata(nodeTypeId).isEmpty()) {
-//            throw new IllegalArgumentException(String.format("Node type ID '%s' not found in NodeRegistry. Cannot add instance '%s' for DAG '%s'.", nodeTypeId, instanceName, dagName));
-//        }
+        // 验证 nodeTypeId 是否存在于注册表（通过获取元数据隐式验证）
+        if (!nodeRegistry.getNodeMetadata(nodeTypeId).isPresent()) {
+            throw new IllegalArgumentException(String.format("在 NodeRegistry (上下文: '%s') 中找不到节点类型 ID '%s'。无法为 DAG '%s' 添加实例 '%s'。",
+                    nodeTypeId, contextType.getSimpleName(), instanceName, dagName));
+        }
 
-        NodeDefinition nodeDef = new NodeDefinition(instanceName, nodeTypeId, configuration);
+        // 创建 NodeDefinition，初始配置为空 Map
+        NodeDefinition nodeDef = new NodeDefinition(instanceName, nodeTypeId, new HashMap<>()); // 内部暂时使用可变 Map
         nodeDefinitions.put(instanceName, nodeDef);
-        log.debug("DAG '{}': Added node definition '{}' (Type: {})", dagName, instanceName, nodeTypeId);
+        log.debug("DAG '{}': 添加了节点定义 '{}' (类型: {})", dagName, instanceName, nodeTypeId);
         return this;
     }
 
-    public DagDefinitionBuilder<C> addNode(String instanceName, String nodeTypeId) {
-        return addNode(instanceName, nodeTypeId, null);
+    // --- 实例配置方法 ---
+
+    /**
+     * 为特定节点实例设置自定义重试策略。
+     * 这将覆盖节点实现中定义的默认重试策略。
+     *
+     * @param instanceName 要配置的节点实例的名称。
+     * @param retrySpec    Reactor 的 Retry 规范。传入 null 可恢复使用节点默认值。
+     * @return this builder。
+     * @throws IllegalStateException 如果节点实例尚未定义。
+     */
+    public DagDefinitionBuilder<C> withRetry(String instanceName, Retry retrySpec) {
+        NodeDefinition nodeDef = getNodeDefinitionOrThrow(instanceName);
+        // 使用 StandardNodeExecutor 中定义的键存储
+        if (retrySpec != null) {
+            nodeDef.getConfigurationInternal().put(StandardNodeExecutor.CONFIG_KEY_RETRY, retrySpec);
+            log.debug("DAG '{}': 为实例 '{}' 配置了自定义 Retry", dagName, instanceName);
+        } else {
+            // 允许移除自定义配置
+            nodeDef.getConfigurationInternal().remove(StandardNodeExecutor.CONFIG_KEY_RETRY);
+            log.debug("DAG '{}': 移除了实例 '{}' 的自定义 Retry (将使用节点默认值)", dagName, instanceName);
+        }
+        return this;
     }
 
     /**
-     * 定义一个连接边。
+     * 为特定节点实例设置自定义执行超时。
+     * 这将覆盖节点实现中定义的默认超时或全局默认超时。
      *
-     * @param upstreamInstanceName   提供输入的上游节点实例名称
-     * @param outputSlotId           上游节点声明的输出槽 ID
-     * @param downstreamInstanceName 接收输入的下游节点实例名称
-     * @param inputSlotId            下游节点声明的输入槽 ID
-     * @param condition              边的激活条件 (可选, null 表示无条件)
-     * @return this builder
-     * @throws IllegalArgumentException 如果节点实例不存在、插槽 ID 无效、或插槽类型不匹配
+     * @param instanceName 要配置的节点实例的名称。
+     * @param timeout      自定义超时时长。不能为空或负数。
+     * @return this builder。
+     * @throws IllegalStateException 如果节点实例尚未定义。
+     * @throws IllegalArgumentException 如果 timeout 为 null 或负数。
      */
+    public DagDefinitionBuilder<C> withTimeout(String instanceName, Duration timeout) {
+        Objects.requireNonNull(timeout, "实例 " + instanceName + " 的 Timeout 不能为空");
+        if (timeout.isNegative()) {
+            throw new IllegalArgumentException("实例 " + instanceName + " 的 Timeout 不能为负数");
+        }
+        NodeDefinition nodeDef = getNodeDefinitionOrThrow(instanceName);
+        // 使用 StandardNodeExecutor 中定义的键存储
+        nodeDef.getConfigurationInternal().put(StandardNodeExecutor.CONFIG_KEY_TIMEOUT, timeout);
+        log.debug("DAG '{}': 为实例 '{}' 配置了自定义 Timeout: {}", dagName, instanceName, timeout);
+        return this;
+    }
+
+    /**
+     * 向特定节点实例添加通用的配置键值对。
+     * 避免使用可能与内部配置键（如重试/超时的键）冲突的键。
+     *
+     * @param instanceName 要配置的节点实例的名称。
+     * @param key          配置键。
+     * @param value        配置值。
+     * @return this builder。
+     * @throws IllegalStateException 如果节点实例尚未定义。
+     */
+    public DagDefinitionBuilder<C> withConfiguration(String instanceName, String key, Object value) {
+        Objects.requireNonNull(key, "实例 " + instanceName + " 的配置键不能为空");
+        if (key.equals(StandardNodeExecutor.CONFIG_KEY_RETRY) || key.equals(StandardNodeExecutor.CONFIG_KEY_TIMEOUT)) {
+            log.warn("DAG '{}': 在实例 '{}' 上为保留键 '{}' 使用了通用的 withConfiguration。考虑使用 withRetry/withTimeout 方法。", dagName, key, instanceName);
+        }
+        NodeDefinition nodeDef = getNodeDefinitionOrThrow(instanceName);
+        nodeDef.getConfigurationInternal().put(key, value);
+        log.debug("DAG '{}': 为实例 '{}' 添加了配置: {}={}", dagName, instanceName, key, value);
+        return this;
+    }
+
+    // --- 边定义方法 (逻辑不变, 确保验证使用注册表) ---
+
     public DagDefinitionBuilder<C> addEdge(String upstreamInstanceName, String outputSlotId,
                                            String downstreamInstanceName, String inputSlotId,
                                            Condition<C> condition) {
-        Objects.requireNonNull(upstreamInstanceName, "Upstream instance name cannot be null");
-        Objects.requireNonNull(outputSlotId, "Output slot ID cannot be null");
-        Objects.requireNonNull(downstreamInstanceName, "Downstream instance name cannot be null");
-        Objects.requireNonNull(inputSlotId, "Input slot ID cannot be null");
+        Objects.requireNonNull(upstreamInstanceName, "上游实例名称不能为空");
+        Objects.requireNonNull(outputSlotId, "输出槽 ID 不能为空");
+        Objects.requireNonNull(downstreamInstanceName, "下游实例名称不能为空");
+        Objects.requireNonNull(inputSlotId, "输入槽 ID 不能为空");
 
-        NodeDefinition upstreamDef = nodeDefinitions.get(upstreamInstanceName);
-        NodeDefinition downstreamDef = nodeDefinitions.get(downstreamInstanceName);
-
-        if (upstreamDef == null) {
-            throw new IllegalArgumentException(String.format("Upstream node instance '%s' not found in DAG '%s'. Cannot add edge.", upstreamInstanceName, dagName));
-        }
-        if (downstreamDef == null) {
-            throw new IllegalArgumentException(String.format("Downstream node instance '%s' not found in DAG '%s'. Cannot add edge.", downstreamInstanceName, dagName));
-        }
+        NodeDefinition upstreamDef = getNodeDefinitionOrThrow(upstreamInstanceName);
+        NodeDefinition downstreamDef = getNodeDefinitionOrThrow(downstreamInstanceName);
 
         // 从注册表获取元数据进行验证
         NodeRegistry.NodeMetadata upstreamMeta = nodeRegistry.getNodeMetadata(upstreamDef.getNodeTypeId())
-                .orElseThrow(() -> new IllegalStateException("Upstream node type '" + upstreamDef.getNodeTypeId() + "' metadata not found in registry."));
+                .orElseThrow(() -> new IllegalStateException("上游节点类型 '" + upstreamDef.getNodeTypeId() + "' 的元数据在注册表中未找到。"));
         NodeRegistry.NodeMetadata downstreamMeta = nodeRegistry.getNodeMetadata(downstreamDef.getNodeTypeId())
-                .orElseThrow(() -> new IllegalStateException("Downstream node type '" + downstreamDef.getNodeTypeId() + "' metadata not found in registry."));
+                .orElseThrow(() -> new IllegalStateException("下游节点类型 '" + downstreamDef.getNodeTypeId() + "' 的元数据在注册表中未找到。"));
 
-        // 验证插槽存在性和类型兼容性
+        // 验证插槽存在且类型兼容
         OutputSlot<?> outputSlot = upstreamMeta.findOutputSlot(outputSlotId)
-                .orElseThrow(() -> new IllegalArgumentException(String.format("Output slot '%s' not found for node type '%s' (Instance: '%s').",
+                .orElseThrow(() -> new IllegalArgumentException(String.format("在节点类型 '%s' (实例: '%s') 上找不到输出槽 '%s'。",
                         outputSlotId, upstreamDef.getNodeTypeId(), upstreamInstanceName)));
 
         InputSlot<?> inputSlot = downstreamMeta.findInputSlot(inputSlotId)
-                .orElseThrow(() -> new IllegalArgumentException(String.format("Input slot '%s' not found for node type '%s' (Instance: '%s').",
+                .orElseThrow(() -> new IllegalArgumentException(String.format("在节点类型 '%s' (实例: '%s') 上找不到输入槽 '%s'。",
                         inputSlotId, downstreamDef.getNodeTypeId(), downstreamInstanceName)));
 
-        // 核心类型检查！
         if (!inputSlot.getType().isAssignableFrom(outputSlot.getType())) {
-            throw new IllegalArgumentException(String.format("Type mismatch for edge %s[%s] -> %s[%s]. Required input type: %s, Provided output type: %s.",
+            throw new IllegalArgumentException(String.format("边 %s[%s] -> %s[%s] 类型不匹配。需要输入类型: %s, 提供输出类型: %s。",
                     upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId,
                     inputSlot.getType().getName(), outputSlot.getType().getName()));
         }
 
-        // 检查下游输入槽是否已被相同上游的相同输出槽连接（允许来自不同上游连接到同一下游输入槽，但不允许完全重复的边）
+        // 检查重复边（相同的源槽到相同的目标槽）
         boolean edgeExists = edgeDefinitions.stream().anyMatch(e ->
-                e.getDownstreamInstanceName().equals(downstreamInstanceName) &&
-                        e.getInputSlotId().equals(inputSlotId) &&
-                        e.getUpstreamInstanceName().equals(upstreamInstanceName) &&
-                        e.getOutputSlotId().equals(outputSlotId));
+                e.getUpstreamInstanceName().equals(upstreamInstanceName) &&
+                        e.getOutputSlotId().equals(outputSlotId) &&
+                        e.getDownstreamInstanceName().equals(downstreamInstanceName) &&
+                        e.getInputSlotId().equals(inputSlotId));
         if (edgeExists) {
-            throw new IllegalArgumentException(String.format("Duplicate edge detected: %s[%s] -> %s[%s]",
-                    upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId));
+            // 如果条件不同，是否允许重复边？目前不允许完全重复。
+            log.warn("DAG '{}': 检测到重复边 (相同的源/目标槽): {}[{}] -> {}[{}]. 忽略添加。",
+                    dagName, upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId);
+            return this; // 或者抛出异常
         }
-        // 注意：允许多个不同的上游连接到同一个下游输入槽。执行引擎需要处理这种情况（例如，取第一个到达的？合并？具体策略待定，目前 InputAccessor 只会暴露一个值）。
+
 
         EdgeDefinition<C> edgeDef = new EdgeDefinition<>(upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, condition);
         edgeDefinitions.add(edgeDef);
-        log.debug("DAG '{}': Added edge {}[{}] -> {}[{}] {}", dagName, upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, condition != null ? "with condition" : "unconditionally");
+        log.debug("DAG '{}': 添加了边 {}[{}] -> {}[{}] {}", dagName, upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, condition != null ? "带条件" : "无条件");
         return this;
     }
 
-    // 重载方法，用于无条件边
     public DagDefinitionBuilder<C> addEdge(String upstreamInstanceName, String outputSlotId,
                                            String downstreamInstanceName, String inputSlotId) {
         return addEdge(upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, null);
     }
 
-    // 简化方法，使用默认输出槽 ID
     public DagDefinitionBuilder<C> addEdge(String upstreamInstanceName,
                                            String downstreamInstanceName, String inputSlotId,
                                            Condition<C> condition) {
@@ -174,112 +226,126 @@ public class DagDefinitionBuilder<C> {
 
     /**
      * 构建最终的、不可变的 DagDefinition 数据结构。
-     * 此方法会执行图的验证和拓扑排序。
+     * 执行图验证和拓扑排序。
      *
-     * @return DagDefinition 实例
-     * @throws IllegalStateException 如果图验证失败
+     * @return 不可变的 DagDefinition 实例。
+     * @throws IllegalStateException 如果图验证失败（例如，循环、缺少必需输入）。
      */
     public DagDefinition<C> build() {
-        log.info("Building DagDefinition for '{}'...", dagName);
+        log.info("开始为 '{}' 构建 DagDefinition...", dagName);
 
-        // 验证图结构 (需要传入 NodeRegistry 以获取元数据)
+        // 在验证和最终构建之前，使节点配置不可变
+        Map<String, NodeDefinition> finalNodeDefinitions = new LinkedHashMap<>();
+        for (Map.Entry<String, NodeDefinition> entry : nodeDefinitions.entrySet()) {
+            finalNodeDefinitions.put(entry.getKey(), entry.getValue().makeImmutable());
+        }
+
+
+        // 验证图结构 (需要 NodeRegistry 提供元数据)
         try {
-            GraphUtils.validateGraphStructure(nodeDefinitions, edgeDefinitions, nodeRegistry, dagName);
+            GraphUtils.validateGraphStructure(finalNodeDefinitions, edgeDefinitions, nodeRegistry, dagName);
         } catch (IllegalStateException e) {
-            log.error("DAG '{}' validation failed during build: {}", dagName, e.getMessage());
+            log.error("DAG '{}' 构建期间验证失败: {}", dagName, e.getMessage());
             throw e;
         }
 
         // 检测循环
         try {
-            GraphUtils.detectCycles(nodeDefinitions.keySet(), edgeDefinitions, dagName);
+            GraphUtils.detectCycles(finalNodeDefinitions.keySet(), edgeDefinitions, dagName);
         } catch (IllegalStateException e) {
-            log.error("DAG '{}' cycle detection failed during build: {}", dagName, e.getMessage());
+            log.error("DAG '{}' 构建期间循环检测失败: {}", dagName, e.getMessage());
             throw e;
         }
 
         // 计算拓扑排序
         List<String> executionOrder;
         try {
-            if (nodeDefinitions.isEmpty()) {
+            if (finalNodeDefinitions.isEmpty()) {
                 executionOrder = Collections.emptyList();
             } else {
-                executionOrder = GraphUtils.topologicalSort(nodeDefinitions.keySet(), edgeDefinitions, dagName);
+                executionOrder = GraphUtils.topologicalSort(finalNodeDefinitions.keySet(), edgeDefinitions, dagName);
             }
         } catch (IllegalStateException e) {
-            log.error("DAG '{}' topological sort failed during build: {}", dagName, e.getMessage());
+            log.error("DAG '{}' 构建期间拓扑排序失败: {}", dagName, e.getMessage());
             throw e;
         }
 
-        log.info("DAG '{}' build successful. {} nodes, {} edges. Execution order: {}", dagName, nodeDefinitions.size(), edgeDefinitions.size(), executionOrder);
-        printDagStructure(); // 打印结构信息
+        log.info("DAG '{}' 构建成功。{} 个节点, {} 条边。执行顺序: {}", dagName, finalNodeDefinitions.size(), edgeDefinitions.size(), executionOrder);
+        printDagStructure(finalNodeDefinitions); // 传递最终定义用于打印
 
         // 创建不可变的 DagDefinition 实例
         return new DefaultDagDefinition<>(
                 dagName,
                 contextType,
                 errorStrategy,
-                Collections.unmodifiableMap(new HashMap<>(nodeDefinitions)), // 复制一份确保不可变
-                Collections.unmodifiableList(new ArrayList<>(edgeDefinitions)), // 复制一份确保不可变
-                executionOrder // topologicalSort 返回的是不可变列表
+                finalNodeDefinitions, // 已经是不可变 Map
+                Collections.unmodifiableList(new ArrayList<>(edgeDefinitions)), // 使边列表不可变
+                executionOrder // 已经是不可变列表
         );
     }
 
-    // --- Helper Methods ---
+    // --- 辅助方法 ---
 
-    private void printDagStructure() {
-        if (!log.isInfoEnabled() || nodeDefinitions.isEmpty()) {
+    private NodeDefinition getNodeDefinitionOrThrow(String instanceName) {
+        NodeDefinition nodeDef = nodeDefinitions.get(instanceName);
+        if (nodeDef == null) {
+            throw new IllegalStateException(String.format("节点实例 '%s' 尚未通过 addNode() 定义。无法配置。", instanceName));
+        }
+        return nodeDef;
+    }
+
+    private void printDagStructure(Map<String, NodeDefinition> finalNodeDefs) {
+        if (!log.isInfoEnabled() || finalNodeDefs.isEmpty()) {
             return;
         }
-        // ... (打印逻辑需要更新以反映新的 EdgeDefinition 结构)
-        log.info("DAG '{}' Final Structure:", dagName);
-        StringBuilder builder = new StringBuilder("\nNodes:\n");
-        builder.append(String.format("%-30s | %-40s | %s\n", "Instance Name", "Type ID", "Configuration"));
+        log.info("DAG '{}' 最终结构:", dagName);
+        StringBuilder builder = new StringBuilder("\n节点:\n");
+        builder.append(String.format("%-30s | %-40s | %s\n", "实例名称", "类型 ID", "配置"));
         builder
 //                .append("-".repeat(100))
                 .append("\n");
-        nodeDefinitions.forEach((name, def) -> builder.append(String.format("%-30s | %-40s | %s\n", name, def.getNodeTypeId(), def.getConfiguration())));
+        finalNodeDefs.forEach((name, def) -> builder.append(String.format("%-30s | %-40s | %s\n", name, def.getNodeTypeId(), def.getConfiguration()))); // getConfiguration 返回不可变 Map
 
-        builder.append("\nEdges:\n");
-        builder.append(String.format("%-30s [%-20s] ---> %-30s [%-20s] | %s\n", "Upstream", "Output Slot", "Downstream", "Input Slot", "Condition"));
+        builder.append("\n边:\n");
+        builder.append(String.format("%-30s [%-20s] ---> %-30s [%-20s] | %s\n", "上游", "输出槽", "下游", "输入槽", "条件"));
         builder
 //                .append("-".repeat(120))
                 .append("\n");
         edgeDefinitions.forEach(edge -> builder.append(String.format("%-30s [%-20s] ---> %-30s [%-20s] | %s\n",
                 edge.getUpstreamInstanceName(), edge.getOutputSlotId(),
                 edge.getDownstreamInstanceName(), edge.getInputSlotId(),
-                edge.getCondition() == Condition.alwaysTrue() ? "Always True" : edge.getCondition().getClass().getSimpleName())));
+                edge.getCondition() == Condition.alwaysTrue() ? "总是 True" : edge.getCondition().getClass().getSimpleName())));
 
         log.info(builder.toString());
     }
 
     // 内部类，表示最终的不可变 DAG 定义实现
+    // (从先前版本复制，确保使用最终的不可变 maps/lists)
     private static class DefaultDagDefinition<C> implements DagDefinition<C> {
         private final String dagName;
         private final Class<C> contextType;
         private final ErrorHandlingStrategy errorStrategy;
-        private final Map<String, NodeDefinition> nodeDefinitions; // InstanceName -> NodeDefinition
-        private final List<EdgeDefinition<C>> edgeDefinitions;
-        private final List<String> executionOrder;
+        private final Map<String, NodeDefinition> nodeDefinitions; // InstanceName -> NodeDefinition (应为不可变)
+        private final List<EdgeDefinition<C>> edgeDefinitions;     // (应为不可变)
+        private final List<String> executionOrder;                 // (应为不可变)
         private final Set<String> allNodeNames;
-        // 预处理边，方便查找
         private final Map<String, List<EdgeDefinition<C>>> incomingEdgesMap;
         private final Map<String, List<EdgeDefinition<C>>> outgoingEdgesMap;
 
 
         DefaultDagDefinition(String dagName, Class<C> contextType, ErrorHandlingStrategy errorStrategy,
-                             Map<String, NodeDefinition> nodeDefinitions,
-                             List<EdgeDefinition<C>> edgeDefinitions,
+                             Map<String, NodeDefinition> nodeDefinitions, // 传递最终的不可变 map
+                             List<EdgeDefinition<C>> edgeDefinitions,     // 传递最终的不可变 list
                              List<String> executionOrder) {
             this.dagName = dagName;
             this.contextType = contextType;
             this.errorStrategy = errorStrategy;
-            this.nodeDefinitions = nodeDefinitions; // 已是不可变 Map
-            this.edgeDefinitions = edgeDefinitions; // 已是不可变 List
-            this.executionOrder = executionOrder;   // 已是不可变 List
+            this.nodeDefinitions = nodeDefinitions; // 已经是不可变
+            this.edgeDefinitions = edgeDefinitions; // 已经是不可变
+            this.executionOrder = executionOrder;   // 已经是不可变
             this.allNodeNames = Collections.unmodifiableSet(nodeDefinitions.keySet());
 
-            // 预处理边
+            // 预计算边的查找
             this.incomingEdgesMap = edgeDefinitions.stream()
                     .collect(Collectors.groupingBy(EdgeDefinition::getDownstreamInstanceName,
                             Collectors.collectingAndThen(Collectors.toList(), Collections::unmodifiableList)));

@@ -44,8 +44,6 @@ public class DagFrameworkProperties {
         @Min(1)
         private int concurrencyLevel = Math.max(1, Runtime.getRuntime().availableProcessors());
 
-        // cacheTtl 属性已移除
-
         public void setConcurrencyLevel(int concurrencyLevel) {
             this.concurrencyLevel = concurrencyLevel;
         }

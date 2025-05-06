@@ -1,17 +1,21 @@
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
+// 移除 org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import xyz.vvrf.reactor.dag.annotation.DagNodeType; // 引入新注解
 import xyz.vvrf.reactor.dag.core.*;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-@Component("finalNodeType")
+// 使用 @DagNodeType 注解
+@DagNodeType(id = "finalNodeType", contextType = ParalleContext.class) // 指定 ID 和上下文类型
 @Slf4j
 public class FinalNode implements DagNode<ParalleContext, String> {
 
@@ -22,7 +26,7 @@ public class FinalNode implements DagNode<ParalleContext, String> {
 
     @Override
     public Set<InputSlot<?>> getInputSlots() {
-        return Set.of(INPUT_A, INPUT_B, INPUT_C);
+        return new HashSet<>(Arrays.asList(INPUT_A, INPUT_B, INPUT_C));
     }
 
     @Override
@@ -37,7 +41,10 @@ public class FinalNode implements DagNode<ParalleContext, String> {
                 String threadName = Thread.currentThread().getName();
                 log.info("Executing {} logic on thread: {}", this.getClass().getSimpleName(), threadName);
 
-                String aggregatedPayloads = getInputSlots().stream()
+                // JDK 8 使用 HashSet 构造输入槽集合
+                Set<InputSlot<?>> inputSlotsSet = new HashSet<>(Arrays.asList(INPUT_A, INPUT_B, INPUT_C));
+
+                String aggregatedPayloads = inputSlotsSet.stream()
                         .map(inputSlot -> {
                             @SuppressWarnings("unchecked")
                             InputSlot<String> typedSlot = (InputSlot<String>) inputSlot;

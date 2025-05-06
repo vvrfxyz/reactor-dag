@@ -1,16 +1,20 @@
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
+// 移除 org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import xyz.vvrf.reactor.dag.annotation.DagNodeType; // 引入新注解
 import xyz.vvrf.reactor.dag.core.*;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 
+import java.util.Collections; // 引入 Collections
+import java.util.HashSet; // 引入 HashSet
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-@Component("parallelNodeTypeC")
+// 使用 @DagNodeType 注解
+@DagNodeType(id = "parallelNodeTypeC", contextType = ParalleContext.class) // 指定 ID 和上下文类型
 @Slf4j
 public class ParallelNodeC implements DagNode<ParalleContext, String> {
 
@@ -19,7 +23,8 @@ public class ParallelNodeC implements DagNode<ParalleContext, String> {
 
     @Override
     public Set<InputSlot<?>> getInputSlots() {
-        return Set.of(INPUT_START_DATA);
+        // JDK 8
+        return new HashSet<>(Collections.singletonList(INPUT_START_DATA));
     }
 
     @Override

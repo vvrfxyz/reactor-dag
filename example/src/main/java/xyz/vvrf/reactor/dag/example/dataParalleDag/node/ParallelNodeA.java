@@ -1,16 +1,21 @@
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
+// 移除 org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import xyz.vvrf.reactor.dag.annotation.DagNodeType; // 引入新注解
 import xyz.vvrf.reactor.dag.core.*;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 
+import java.util.Arrays; // 引入 Arrays
+import java.util.Collections;
+import java.util.HashSet; // 引入 HashSet
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-@Component("parallelNodeTypeA")
+// 使用 @DagNodeType 注解
+@DagNodeType(id = "parallelNodeTypeA", contextType = ParalleContext.class) // 指定 ID 和上下文类型
 @Slf4j
 public class ParallelNodeA implements DagNode<ParalleContext, String> {
 
@@ -19,7 +24,7 @@ public class ParallelNodeA implements DagNode<ParalleContext, String> {
 
     @Override
     public Set<InputSlot<?>> getInputSlots() {
-        return Set.of(INPUT_START_DATA);
+        return new HashSet<>(Collections.singletonList(INPUT_START_DATA));
     }
 
     @Override
@@ -31,15 +36,14 @@ public class ParallelNodeA implements DagNode<ParalleContext, String> {
     public Mono<NodeResult<ParalleContext, String>> execute(ParalleContext context, InputAccessor<ParalleContext> inputs) {
         return Mono.defer(() -> {
             try {
-                // 输入检查日志
                 inputs.getPayload(INPUT_START_DATA)
                         .ifPresent(payload -> log.debug("{} logic received payload from input '{}': {}", this.getClass().getSimpleName(), INPUT_START_DATA.getId(), payload));
-                if (!inputs.isAvailable(INPUT_START_DATA)) {
+                // JDK 8 使用 !isPresent()
+                if (!inputs.getPayload(INPUT_START_DATA).isPresent()) {
                     if (inputs.isFailed(INPUT_START_DATA)) log.warn("{} notes that input '{}' failed.", this.getClass().getSimpleName(), INPUT_START_DATA.getId());
                     else if (inputs.isSkipped(INPUT_START_DATA)) log.warn("{} notes that input '{}' was skipped.", this.getClass().getSimpleName(), INPUT_START_DATA.getId());
                     else if (inputs.isInactive(INPUT_START_DATA)) log.warn("{} notes that input '{}' was inactive.", this.getClass().getSimpleName(), INPUT_START_DATA.getId());
                     else log.warn("{} notes that input '{}' was not available.", this.getClass().getSimpleName(), INPUT_START_DATA.getId());
-                    // 可以在这里决定是否因输入不足而失败或跳过
                     // return Mono.just(NodeResult.<ParalleContext, String>skipped());
                 }
 
