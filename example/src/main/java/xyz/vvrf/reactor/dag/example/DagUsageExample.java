@@ -31,7 +31,7 @@ public class DagUsageExample {
     }
 
     @Autowired
-    private SpringDagEngine dagEngine;
+    private SpringDagEngine<ParalleContext> dagEngine;
 
     @Autowired
     private DagDefinition<ParalleContext> dataParalleDag;

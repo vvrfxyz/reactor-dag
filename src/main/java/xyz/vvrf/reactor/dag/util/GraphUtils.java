@@ -2,99 +2,107 @@
 package xyz.vvrf.reactor.dag.util;
 
 import lombok.extern.slf4j.Slf4j;
-import xyz.vvrf.reactor.dag.builder.DagDefinitionBuilder.NodeBuildInfo; // 引用内部类
+import xyz.vvrf.reactor.dag.core.*;
+import xyz.vvrf.reactor.dag.registry.NodeRegistry; // 需要注册表
 
 import java.util.*;
 import java.util.stream.Collectors;
 
 /**
  * 提供 DAG 图结构验证、循环检测和拓扑排序的工具方法。
+ * 现在基于 DagDefinition 数据结构操作。
  *
- * @author ruifeng.wen (Refactored)
+ * @author Refactored
  */
 @Slf4j
 public final class GraphUtils {
 
-    private GraphUtils() { // 防止实例化
-    }
+    private GraphUtils() {}
 
     /**
      * 验证 DAG 图结构的完整性和类型兼容性。
-     * - 检查所有连接的节点是否存在。
-     * - 检查连接的类型是否兼容 (上游输出类型 assignable to 下游输入槽类型)。
-     * - 检查所有声明了输入需求的节点是否有对应的输入连接。
      *
-     * @param nodesInGraph 图中的节点信息 (InstanceName -> NodeBuildInfo)
-     * @param wiring       图中的连接信息 (Downstream -> Map<InputSlot, Upstream>)
-     * @param dagName      DAG 名称，用于日志
+     * @param nodeDefinitions 节点定义 Map
+     * @param edgeDefinitions 边定义列表
+     * @param nodeRegistry    节点注册表，用于获取元数据
+     * @param dagName         DAG 名称
      * @throws IllegalStateException 如果验证失败
      */
     public static <C> void validateGraphStructure(
-            Map<String, NodeBuildInfo<C>> nodesInGraph,
-            Map<String, Map<String, String>> wiring,
+            Map<String, NodeDefinition> nodeDefinitions,
+            List<EdgeDefinition<C>> edgeDefinitions,
+            NodeRegistry<C> nodeRegistry,
             String dagName) throws IllegalStateException {
 
         log.debug("DAG '{}': Starting graph structure validation...", dagName);
 
-        // 检查连接的有效性
-        for (Map.Entry<String, Map<String, String>> downstreamEntry : wiring.entrySet()) {
-            String downstreamName = downstreamEntry.getKey();
-            Map<String, String> connections = downstreamEntry.getValue();
+        Set<String> nodeNames = nodeDefinitions.keySet();
 
-            NodeBuildInfo<C> downstreamInfo = nodesInGraph.get(downstreamName);
-            if (downstreamInfo == null) {
-                // 这个理论上不应该发生，因为 builder 在 wire 时检查了
-                throw new IllegalStateException(String.format("DAG '%s': Wiring defined for non-existent downstream node '%s'.", dagName, downstreamName));
+        // 检查边的有效性
+        for (EdgeDefinition<C> edge : edgeDefinitions) {
+            String upName = edge.getUpstreamInstanceName();
+            String downName = edge.getDownstreamInstanceName();
+            String outSlotId = edge.getOutputSlotId();
+            String inSlotId = edge.getInputSlotId();
+
+            // 检查节点是否存在
+            if (!nodeNames.contains(upName)) {
+                throw new IllegalStateException(String.format("DAG '%s': Edge references non-existent upstream node '%s'.", dagName, upName));
+            }
+            if (!nodeNames.contains(downName)) {
+                throw new IllegalStateException(String.format("DAG '%s': Edge references non-existent downstream node '%s'.", dagName, downName));
             }
 
-            for (Map.Entry<String, String> connection : connections.entrySet()) {
-                String inputSlot = connection.getKey();
-                String upstreamName = connection.getValue();
+            NodeDefinition upDef = nodeDefinitions.get(upName);
+            NodeDefinition downDef = nodeDefinitions.get(downName);
 
-                NodeBuildInfo<C> upstreamInfo = nodesInGraph.get(upstreamName);
-                if (upstreamInfo == null) {
-                    throw new IllegalStateException(String.format("DAG '%s': Node '%s' is wired to non-existent upstream node '%s' for input slot '%s'.",
-                            dagName, downstreamName, upstreamName, inputSlot));
-                }
+            // 获取元数据
+            NodeRegistry.NodeMetadata upMeta = nodeRegistry.getNodeMetadata(upDef.getNodeTypeId())
+                    .orElseThrow(() -> new IllegalStateException(String.format("DAG '%s': Metadata not found in registry for upstream node type '%s' (Instance: '%s').", dagName, upDef.getNodeTypeId(), upName)));
+            NodeRegistry.NodeMetadata downMeta = nodeRegistry.getNodeMetadata(downDef.getNodeTypeId())
+                    .orElseThrow(() -> new IllegalStateException(String.format("DAG '%s': Metadata not found in registry for downstream node type '%s' (Instance: '%s').", dagName, downDef.getNodeTypeId(), downName)));
 
-                // 再次检查类型兼容性 (builder 也检查过，这里是最终确认)
-                Class<?> requiredType = downstreamInfo.getInputRequirements().get(inputSlot);
-                if (requiredType == null) {
-                    // 这个理论上不应该发生
-                    throw new IllegalStateException(String.format("DAG '%s': Node '%s' has wiring for undeclared input slot '%s'.",
-                            dagName, downstreamName, inputSlot));
-                }
-                Class<?> providedType = upstreamInfo.getOutputType();
-                if (!requiredType.isAssignableFrom(providedType)) {
-                    throw new IllegalStateException(String.format("DAG '%s': Type mismatch remains for input '%s' of node '%s'. Required: %s, Provided by '%s': %s",
-                            dagName, inputSlot, downstreamName, requiredType.getSimpleName(),
-                            upstreamName, providedType.getSimpleName()));
-                }
+            // 检查插槽是否存在和类型匹配 (Builder 已检查，这里是最终确认)
+            OutputSlot<?> outputSlot = upMeta.findOutputSlot(outSlotId)
+                    .orElseThrow(() -> new IllegalStateException(String.format("DAG '%s': Output slot '%s' not found for node type '%s' (Instance: '%s').", dagName, outSlotId, upDef.getNodeTypeId(), upName)));
+            InputSlot<?> inputSlot = downMeta.findInputSlot(inSlotId)
+                    .orElseThrow(() -> new IllegalStateException(String.format("DAG '%s': Input slot '%s' not found for node type '%s' (Instance: '%s').", dagName, inSlotId, downDef.getNodeTypeId(), downName)));
+
+            if (!inputSlot.getType().isAssignableFrom(outputSlot.getType())) {
+                throw new IllegalStateException(String.format("DAG '%s': Type mismatch remains for edge %s[%s] -> %s[%s]. Required: %s, Provided: %s",
+                        dagName, upName, outSlotId, downName, inSlotId, inputSlot.getType().getName(), outputSlot.getType().getName()));
             }
         }
 
-        // 检查所有有输入需求的节点是否都有连接
-        for (Map.Entry<String, NodeBuildInfo<C>> nodeEntry : nodesInGraph.entrySet()) {
+        // 检查所有必需的输入槽是否都有至少一个入边连接
+        Map<String, List<EdgeDefinition<C>>> incomingEdgesMap = edgeDefinitions.stream()
+                .collect(Collectors.groupingBy(EdgeDefinition::getDownstreamInstanceName));
+
+        for (Map.Entry<String, NodeDefinition> nodeEntry : nodeDefinitions.entrySet()) {
             String nodeName = nodeEntry.getKey();
-            NodeBuildInfo<C> nodeInfo = nodeEntry.getValue();
-            Map<String, Class<?>> requirements = nodeInfo.getInputRequirements();
-            Map<String, String> actualWiring = wiring.getOrDefault(nodeName, Collections.emptyMap());
+            NodeDefinition nodeDef = nodeEntry.getValue();
+            NodeRegistry.NodeMetadata meta = nodeRegistry.getNodeMetadata(nodeDef.getNodeTypeId()).get(); // 此时一定存在
 
-            for (String requiredSlot : requirements.keySet()) {
-                if (!actualWiring.containsKey(requiredSlot)) {
-                    throw new IllegalStateException(String.format("DAG '%s': Node '%s' requires input for slot '%s' (type %s), but it is not wired.",
-                            dagName, nodeName, requiredSlot, requirements.get(requiredSlot).getSimpleName()));
-                }
-            }
-            // (可选) 检查是否有未使用的连接定义 (wiring 中有，但节点不声明该 input slot)
-            for (String wiredSlot : actualWiring.keySet()) {
-                if (!requirements.containsKey(wiredSlot)) {
-                    log.warn("DAG '{}': Node '{}' has wiring defined for input slot '{}', but the node implementation does not declare this requirement. This wiring will be ignored.",
-                            dagName, nodeName, wiredSlot);
-                    // 注意：这里可以选择抛出异常，或者仅警告。当前选择警告。
+            Set<String> requiredInputSlotIds = meta.getInputSlots().stream()
+                    .filter(InputSlot::isRequired)
+                    .map(InputSlot::getId)
+                    .collect(Collectors.toSet());
+
+            if (!requiredInputSlotIds.isEmpty()) {
+                Set<String> connectedInputSlotIds = incomingEdgesMap.getOrDefault(nodeName, Collections.emptyList())
+                        .stream()
+                        .map(EdgeDefinition::getInputSlotId)
+                        .collect(Collectors.toSet());
+
+                requiredInputSlotIds.removeAll(connectedInputSlotIds); // 移除所有被连接的必需槽
+
+                if (!requiredInputSlotIds.isEmpty()) {
+                    throw new IllegalStateException(String.format("DAG '%s': Node '%s' (Type: '%s') has required input slots [%s] that are not connected by any incoming edge.",
+                            dagName, nodeName, nodeDef.getNodeTypeId(), String.join(", ", requiredInputSlotIds)));
                 }
             }
         }
+
 
         log.debug("DAG '{}': Graph structure validation passed.", dagName);
     }
@@ -102,24 +110,25 @@ public final class GraphUtils {
     /**
      * 使用深度优先搜索 (DFS) 检测 DAG 中是否存在循环。
      *
-     * @param allNodeNames 图中所有节点的名称集合
-     * @param wiring       图的连接关系 (Downstream -> Map<InputSlot, Upstream>)
-     * @param dagName      DAG 名称，用于日志
+     * @param allNodeNames    图中所有节点的名称集合
+     * @param edgeDefinitions 图的边定义列表
+     * @param dagName         DAG 名称
      * @throws IllegalStateException 如果检测到循环
      */
-    public static void detectCycles(
+    public static <C> void detectCycles(
             Set<String> allNodeNames,
-            Map<String, Map<String, String>> wiring,
+            List<EdgeDefinition<C>> edgeDefinitions,
             String dagName) throws IllegalStateException {
 
         log.debug("DAG '{}': Starting cycle detection...", dagName);
         Set<String> visited = new HashSet<>(); // 完全访问过的节点
         Set<String> visiting = new HashSet<>(); // 当前递归路径上的节点
+        Map<String, List<String>> adj = buildAdjacencyList(edgeDefinitions); // 构建邻接表
 
         for (String nodeName : allNodeNames) {
             if (!visited.contains(nodeName)) {
-                if (hasCycleDFS(nodeName, visited, visiting, wiring, dagName)) {
-                    // 异常已在 hasCycleDFS 内部抛出，这里只是为了逻辑完整性
+                if (hasCycleDFS(nodeName, visited, visiting, adj, dagName)) {
+                    // 异常已在内部抛出
                     return;
                 }
             }
@@ -132,77 +141,57 @@ public final class GraphUtils {
             String nodeName,
             Set<String> visited,
             Set<String> visiting,
-            Map<String, Map<String, String>> wiring,
+            Map<String, List<String>> adj, // Upstream -> List<Downstream>
             String dagName) {
 
         visited.add(nodeName);
         visiting.add(nodeName);
 
-        // 找到所有依赖当前节点 (nodeName) 的下游节点
-        for (Map.Entry<String, Map<String, String>> downstreamEntry : wiring.entrySet()) {
-            String downstreamNode = downstreamEntry.getKey();
-            Map<String, String> connections = downstreamEntry.getValue();
-            // 检查下游节点的连接是否包含当前节点作为上游
-            if (connections.containsValue(nodeName)) {
-                // downstreamNode 依赖于 nodeName
-                if (visiting.contains(downstreamNode)) {
-                    // 发现循环！
-                    throw new IllegalStateException(String.format("DAG '%s': Cycle detected! Path involves edge from '%s' to '%s'.",
-                            dagName, nodeName, downstreamNode));
+        for (String neighbor : adj.getOrDefault(nodeName, Collections.emptyList())) {
+            if (visiting.contains(neighbor)) {
+                // 发现循环！
+                throw new IllegalStateException(String.format("DAG '%s': Cycle detected! Path involves edge from '%s' to '%s'.",
+                        dagName, nodeName, neighbor)); // 可能需要更复杂的路径追踪
+            }
+            if (!visited.contains(neighbor)) {
+                if (hasCycleDFS(neighbor, visited, visiting, adj, dagName)) {
+                    return true; // 循环已找到并抛出异常
                 }
-                if (!visited.contains(downstreamNode)) {
-                    // 递归检查下游节点
-                    if (hasCycleDFS(downstreamNode, visited, visiting, wiring, dagName)) {
-                        return true; // 循环已找到并抛出异常
-                    }
-                }
-                // 如果下游节点已访问过且不在当前路径上，则安全
             }
         }
 
-
-        visiting.remove(nodeName); // 回溯，将节点移出当前路径
-        return false; // 从此节点出发未找到循环
+        visiting.remove(nodeName); // 回溯
+        return false;
     }
 
 
     /**
      * 使用 Kahn 算法计算 DAG 的拓扑排序。
      *
-     * @param allNodeNames 图中所有节点的名称集合
-     * @param wiring       图的连接关系 (Downstream -> Map<InputSlot, Upstream>)
-     * @param dagName      DAG 名称，用于日志
+     * @param allNodeNames    图中所有节点的名称集合
+     * @param edgeDefinitions 图的边定义列表
+     * @param dagName         DAG 名称
      * @return 按拓扑顺序排列的节点名称列表
-     * @throws IllegalStateException 如果图包含循环 (虽然 cycle detection 应该先捕捉到) 或图不连通导致排序不完整
+     * @throws IllegalStateException 如果图包含循环或排序不完整
      */
-    public static List<String> topologicalSort(
+    public static <C> List<String> topologicalSort(
             Set<String> allNodeNames,
-            Map<String, Map<String, String>> wiring,
+            List<EdgeDefinition<C>> edgeDefinitions,
             String dagName) throws IllegalStateException {
 
         log.debug("DAG '{}': Starting topological sort...", dagName);
         Map<String, Integer> inDegree = new HashMap<>();
-        Map<String, List<String>> adj = new HashMap<>(); // 邻接表: Upstream -> List<Downstream>
+        Map<String, List<String>> adj = buildAdjacencyList(edgeDefinitions); // Upstream -> List<Downstream>
 
-        // 初始化入度和邻接表
+        // 初始化入度
         for (String nodeName : allNodeNames) {
             inDegree.put(nodeName, 0);
-            adj.put(nodeName, new ArrayList<>());
         }
 
-        // 构建图和计算入度
-        for (Map.Entry<String, Map<String, String>> downstreamEntry : wiring.entrySet()) {
-            String downstreamNode = downstreamEntry.getKey();
-            Map<String, String> connections = downstreamEntry.getValue();
-            for (String upstreamNode : connections.values()) {
-                // 添加边: upstream -> downstream
-                if (adj.containsKey(upstreamNode)) { // 防御性检查
-                    adj.get(upstreamNode).add(downstreamNode);
-                    inDegree.put(downstreamNode, inDegree.getOrDefault(downstreamNode, 0) + 1);
-                } else {
-                    // 理论上不应发生，因为 allNodeNames 包含了所有节点
-                    throw new IllegalStateException(String.format("DAG '%s': Inconsistent state during topological sort. Upstream node '%s' not found in node set.", dagName, upstreamNode));
-                }
+        // 计算入度
+        for (List<String> neighbors : adj.values()) {
+            for (String neighbor : neighbors) {
+                inDegree.put(neighbor, inDegree.getOrDefault(neighbor, 0) + 1);
             }
         }
 
@@ -228,7 +217,7 @@ public final class GraphUtils {
             }
         }
 
-        // 检查排序结果是否包含所有节点
+        // 检查排序结果
         if (sortedOrder.size() != allNodeNames.size()) {
             Set<String> remainingNodes = new HashSet<>(allNodeNames);
             remainingNodes.removeAll(sortedOrder);
@@ -237,6 +226,16 @@ public final class GraphUtils {
         }
 
         log.debug("DAG '{}': Topological sort successful.", dagName);
-        return Collections.unmodifiableList(sortedOrder); // 返回不可变列表
+        return Collections.unmodifiableList(sortedOrder);
+    }
+
+    // 辅助方法：构建邻接表 (Upstream -> List<Downstream>)
+    private static <C> Map<String, List<String>> buildAdjacencyList(List<EdgeDefinition<C>> edgeDefinitions) {
+        Map<String, List<String>> adj = new HashMap<>();
+        for (EdgeDefinition<C> edge : edgeDefinitions) {
+            adj.computeIfAbsent(edge.getUpstreamInstanceName(), k -> new ArrayList<>())
+                    .add(edge.getDownstreamInstanceName());
+        }
+        return adj;
     }
 }

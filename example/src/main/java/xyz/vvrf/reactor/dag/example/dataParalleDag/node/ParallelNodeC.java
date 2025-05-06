@@ -1,65 +1,59 @@
-// file: example/dataParalleDag/node/ParallelNodeC.java
 package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
 
-import lombok.extern.slf4j.Slf4j; // Import Slf4j
-import reactor.core.publisher.Flux; // Import Flux
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import xyz.vvrf.reactor.dag.core.DagNode;
-import xyz.vvrf.reactor.dag.core.Event; // Import Event
-import xyz.vvrf.reactor.dag.core.InputAccessor;
-import xyz.vvrf.reactor.dag.core.NodeResult;
+import xyz.vvrf.reactor.dag.core.*;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
 
-import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-/**
- * 并行节点 C 的逻辑。
- * 使用 SLF4j 日志并产生一个完成事件。
- */
-@Slf4j // Add Slf4j logging
+@Component("parallelNodeTypeC")
+@Slf4j
 public class ParallelNodeC implements DagNode<ParalleContext, String> {
 
-    private static final String INPUT_SLOT_NAME = "startData";
+    public static final InputSlot<String> INPUT_START_DATA = InputSlot.required("startData", String.class);
+    public static final OutputSlot<String> OUTPUT_RESULT = OutputSlot.defaultOutput(String.class);
 
     @Override
-    public Class<String> getPayloadType() {
-        return String.class;
+    public Set<InputSlot<?>> getInputSlots() {
+        return Set.of(INPUT_START_DATA);
     }
 
     @Override
-    public Map<String, Class<?>> getInputRequirements() {
-        return Map.of(INPUT_SLOT_NAME, String.class);
+    public OutputSlot<String> getOutputSlot() {
+        return OUTPUT_RESULT;
     }
 
     @Override
     public Mono<NodeResult<ParalleContext, String>> execute(ParalleContext context, InputAccessor<ParalleContext> inputs) {
-        return Mono.fromCallable(() -> {
-            String threadName = Thread.currentThread().getName();
-            // Use logger
-            log.info("Executing {} logic on thread: {} (requires input '{}')", this.getClass().getSimpleName(), threadName, INPUT_SLOT_NAME);
-
+        return Mono.defer(() -> {
             try {
-                TimeUnit.MILLISECONDS.sleep(500);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                log.error("Interrupted during sleep in {}", this.getClass().getSimpleName(), e);
-                return NodeResult.failure(context, e, String.class);
+                String threadName = Thread.currentThread().getName();
+                log.info("Executing {} logic on thread: {} (requires input '{}')", this.getClass().getSimpleName(), threadName, INPUT_START_DATA.getId());
+
+                try {
+                    TimeUnit.MILLISECONDS.sleep(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    log.error("Interrupted during sleep in {}", this.getClass().getSimpleName(), e);
+                    return Mono.just(NodeResult.<ParalleContext, String>failure(e));
+                }
+
+                String resultPayload = this.getClass().getSimpleName() + " executed successfully on " + threadName;
+                log.info("{} logic finished.", this.getClass().getSimpleName());
+
+                Event<String> completionEvent = Event.of("NODE_COMPLETED", resultPayload);
+                NodeResult<ParalleContext, String> successResult = NodeResult.success(resultPayload, Flux.just(completionEvent));
+
+                return Mono.just(successResult);
+
+            } catch (Throwable t) {
+                log.error("Unexpected error executing {} logic: {}", this.getClass().getSimpleName(), t.getMessage(), t);
+                return Mono.just(NodeResult.<ParalleContext, String>failure(t));
             }
-
-            String resultPayload = this.getClass().getSimpleName() + " executed successfully on " + threadName;
-            log.info("{} logic finished.", this.getClass().getSimpleName());
-
-            // Create an event
-            Event<String> completionEvent = Event.of("NODE_COMPLETED", resultPayload);
-
-            // Return success with payload and event flux
-            return NodeResult.success(context, resultPayload, Flux.just(completionEvent), String.class); // Pass event flux
-
-        }).onErrorResume(error -> {
-            // Use logger
-            log.error("Error executing {} logic: {}", this.getClass().getSimpleName(), error.getMessage(), error);
-            return Mono.just(NodeResult.failure(context, error, String.class));
         });
     }
 }

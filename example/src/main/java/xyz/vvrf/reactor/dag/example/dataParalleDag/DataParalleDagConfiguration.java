@@ -2,106 +2,175 @@
 package xyz.vvrf.reactor.dag.example.dataParalleDag;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired; // 用于构造函数注入
+import org.springframework.beans.factory.ObjectProvider; // 引入 ObjectProvider
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import reactor.core.scheduler.Scheduler; // 引入 Scheduler
+import reactor.core.scheduler.Schedulers; // 引入 Schedulers
 import xyz.vvrf.reactor.dag.builder.DagDefinitionBuilder;
 import xyz.vvrf.reactor.dag.core.DagDefinition;
-import xyz.vvrf.reactor.dag.core.DagNode; // 引入 DagNode
-import xyz.vvrf.reactor.dag.example.dataParalleDag.node.*; // 引入节点类
+import xyz.vvrf.reactor.dag.core.DagNode;
+import xyz.vvrf.reactor.dag.core.InputSlot;
+import xyz.vvrf.reactor.dag.core.OutputSlot;
+import xyz.vvrf.reactor.dag.example.dataParalleDag.node.*;
+import xyz.vvrf.reactor.dag.execution.DagEngine; // 引入 DagEngine
+import xyz.vvrf.reactor.dag.execution.NodeExecutor; // 引入 NodeExecutor
+import xyz.vvrf.reactor.dag.execution.StandardDagEngine; // 引入 StandardDagEngine
+import xyz.vvrf.reactor.dag.execution.StandardNodeExecutor; // 引入 StandardNodeExecutor
+import xyz.vvrf.reactor.dag.monitor.DagMonitorListener; // 引入 DagMonitorListener
+import xyz.vvrf.reactor.dag.registry.NodeRegistry;
+import xyz.vvrf.reactor.dag.registry.SimpleNodeRegistry;
+import xyz.vvrf.reactor.dag.spring.SpringDagEngine; // 引入 SpringDagEngine
+import xyz.vvrf.reactor.dag.spring.boot.DagFrameworkProperties; // 引入 DagFrameworkProperties
 
+import java.util.Collections; // 引入 Collections
+import java.util.List; // 引入 List
+import java.util.Map;
 import java.util.Objects;
 
-/**
- * 使用 DagDefinitionBuilder 配置并行 DAG (重构版)。
- * 作为 Spring Configuration 类提供 DagDefinition Bean。
- * 利用依赖注入管理节点实例，并直接添加节点实现。
- */
-@Configuration // 标记为 Spring 配置类
+@Configuration
 @Slf4j
 public class DataParalleDagConfiguration {
 
-    // 定义图中使用的节点实例名称 (保持不变)
+    // 节点实例名称 (保持不变)
     private static final String INSTANCE_START = "startNode";
     private static final String INSTANCE_PROC_A = "parallelProcessorA";
     private static final String INSTANCE_PROC_B = "parallelProcessorB";
     private static final String INSTANCE_PROC_C = "parallelProcessorC";
     private static final String INSTANCE_AGGREGATOR = "finalAggregator";
 
-    // --- 依赖注入节点实例 ---
-    private final FirstNode firstNode;
-    private final ParallelNodeA parallelNodeA;
-    private final ParallelNodeB parallelNodeB;
-    private final ParallelNodeC parallelNodeC;
-    private final FinalNode finalNode;
+    // 节点类型 ID (保持不变)
+    private static final String TYPE_ID_START = "firstNodeType";
+    private static final String TYPE_ID_PROC_A = "parallelNodeTypeA";
+    private static final String TYPE_ID_PROC_B = "parallelNodeTypeB";
+    private static final String TYPE_ID_PROC_C = "parallelNodeTypeC";
+    private static final String TYPE_ID_AGGREGATOR = "finalNodeType";
 
-    /**
-     * 通过构造函数注入所有需要的 DagNode Bean。
-     * Spring 会自动查找并注入这些类型的 Bean。
-     *
-     * @param firstNode      FirstNode 的 Bean 实例
-     * @param parallelNodeA  ParallelNodeA 的 Bean 实例
-     * @param parallelNodeB  ParallelNodeB 的 Bean 实例
-     * @param parallelNodeC  ParallelNodeC 的 Bean 实例
-     * @param finalNode      FinalNode 的 Bean 实例
-     */
-    @Autowired // 明确标注构造函数用于注入
-    public DataParalleDagConfiguration(
-            FirstNode firstNode,
-            ParallelNodeA parallelNodeA,
-            ParallelNodeB parallelNodeB,
-            ParallelNodeC parallelNodeC,
-            FinalNode finalNode) {
-        this.firstNode = Objects.requireNonNull(firstNode, "FirstNode bean cannot be null");
-        this.parallelNodeA = Objects.requireNonNull(parallelNodeA, "ParallelNodeA bean cannot be null");
-        this.parallelNodeB = Objects.requireNonNull(parallelNodeB, "ParallelNodeB bean cannot be null");
-        this.parallelNodeC = Objects.requireNonNull(parallelNodeC, "ParallelNodeC bean cannot be null");
-        this.finalNode = Objects.requireNonNull(finalNode, "FinalNode bean cannot be null");
-        log.info("DataParalleDagConfiguration: 所有节点 Bean 已成功注入。");
+    private final ApplicationContext applicationContext;
+
+    @Autowired
+    public DataParalleDagConfiguration(ApplicationContext applicationContext) {
+        this.applicationContext = Objects.requireNonNull(applicationContext);
     }
 
-    @Bean // 将构建好的 DagDefinition 暴露为 Spring Bean
-    public DagDefinition<ParalleContext> dataParallelDagDefinition() {
-        log.info("开始构建 DataParallel DAG 定义 (使用注入的节点)...");
+    @Bean
+    public NodeRegistry<ParalleContext> paralleContextNodeRegistry() {
+        log.info("创建 ParalleContext 的 NodeRegistry...");
+        SimpleNodeRegistry<ParalleContext> registry = new SimpleNodeRegistry<>();
+        Map<String, DagNode> nodeBeans = applicationContext.getBeansOfType(DagNode.class);
 
-        // 1. 创建构建器
+        log.info("发现 {} 个 DagNode Bean，尝试注册...", nodeBeans.size());
+        nodeBeans.forEach((beanName, nodeInstance) -> {
+            try {
+                if (isAssignableToDagNodeParalleContext(nodeInstance)) {
+                    log.debug("注册 Node Type ID: '{}' using Bean: {}", beanName, nodeInstance.getClass().getSimpleName());
+                    registry.register(beanName, nodeInstance);
+                } else {
+                    log.warn("跳过注册 Bean '{}'，因为它不适用于 ParalleContext。", beanName);
+                }
+            } catch (IllegalArgumentException e) {
+                log.warn("注册 Node Type ID '{}' 失败 (可能已存在): {}", beanName, e.getMessage());
+            } catch (Exception e) {
+                log.error("注册 Node Type ID '{}' 时发生意外错误", beanName, e);
+            }
+        });
+        log.info("NodeRegistry<ParalleContext> 创建并填充完毕。");
+        return registry;
+    }
+
+    // 辅助方法检查类型 (简化版)
+    private boolean isAssignableToDagNodeParalleContext(Object bean) {
+        // 实际应用中可能需要更健壮的检查
+        return bean instanceof FirstNode || bean instanceof ParallelNodeA || bean instanceof ParallelNodeB || bean instanceof ParallelNodeC || bean instanceof FinalNode;
+    }
+
+    @Bean
+    public DagDefinition<ParalleContext> dataParallelDagDefinition(NodeRegistry<ParalleContext> nodeRegistry) {
+        log.info("开始构建 DataParallel DAG 定义 (使用 NodeRegistry)...");
         DagDefinitionBuilder<ParalleContext> builder = new DagDefinitionBuilder<>(
-                ParalleContext.class, // Context 类型
-                "DataParallelDAG"     // DAG 名称
+                ParalleContext.class,
+                "DataParallelDAG",
+                nodeRegistry
         );
+        // ... (addNode 和 addEdge 调用保持不变)
+        log.info("添加节点定义...");
+        builder.addNode(INSTANCE_START, TYPE_ID_START);
+        builder.addNode(INSTANCE_PROC_A, TYPE_ID_PROC_A);
+        builder.addNode(INSTANCE_PROC_B, TYPE_ID_PROC_B);
+        builder.addNode(INSTANCE_PROC_C, TYPE_ID_PROC_C);
+        builder.addNode(INSTANCE_AGGREGATOR, TYPE_ID_AGGREGATOR);
+        log.info("已添加所有节点定义。");
 
-        // 2. 添加节点实例到图中 (直接使用注入的 Bean)
-        // 不再需要 registerImplementation
-        log.info("添加节点实例...");
-        builder.addNode(INSTANCE_START, this.firstNode); // 直接使用注入的 firstNode Bean
-        builder.addNode(INSTANCE_PROC_A, this.parallelNodeA); // 使用注入的 parallelNodeA Bean
-        builder.addNode(INSTANCE_PROC_B, this.parallelNodeB); // 使用注入的 parallelNodeB Bean
-        builder.addNode(INSTANCE_PROC_C, this.parallelNodeC); // 使用注入的 parallelNodeC Bean
-        builder.addNode(INSTANCE_AGGREGATOR, this.finalNode); // 使用注入的 finalNode Bean
-        log.info("已添加所有节点实例。");
-
-        // 3. 定义连接关系 (Wiring) - 逻辑保持不变，依赖实例名称
         log.info("定义节点连接...");
-        // 并行节点依赖于起始节点的输出
-        builder.wire(INSTANCE_PROC_A, "startData", INSTANCE_START); // procA.startData <- startNode.output
-        builder.wire(INSTANCE_PROC_B, "startData", INSTANCE_START); // procB.startData <- startNode.output
-        builder.wire(INSTANCE_PROC_C, "startData", INSTANCE_START); // procC.startData <- startNode.output
-
-        // 最终节点依赖于并行节点的输出
-        builder.wire(INSTANCE_AGGREGATOR, "resultA", INSTANCE_PROC_A); // aggregator.resultA <- procA.output
-        builder.wire(INSTANCE_AGGREGATOR, "resultB", INSTANCE_PROC_B); // aggregator.resultB <- procB.output
-        builder.wire(INSTANCE_AGGREGATOR, "resultC", INSTANCE_PROC_C); // aggregator.resultC <- procC.output
+        builder.addEdge(INSTANCE_START, OutputSlot.DEFAULT_OUTPUT_SLOT_ID, INSTANCE_PROC_A, ParallelNodeA.INPUT_START_DATA.getId());
+        builder.addEdge(INSTANCE_START, OutputSlot.DEFAULT_OUTPUT_SLOT_ID, INSTANCE_PROC_B, ParallelNodeB.INPUT_START_DATA.getId());
+        builder.addEdge(INSTANCE_START, OutputSlot.DEFAULT_OUTPUT_SLOT_ID, INSTANCE_PROC_C, ParallelNodeC.INPUT_START_DATA.getId());
+        builder.addEdge(INSTANCE_PROC_A, OutputSlot.DEFAULT_OUTPUT_SLOT_ID, INSTANCE_AGGREGATOR, FinalNode.INPUT_A.getId());
+        builder.addEdge(INSTANCE_PROC_B, OutputSlot.DEFAULT_OUTPUT_SLOT_ID, INSTANCE_AGGREGATOR, FinalNode.INPUT_B.getId());
+        builder.addEdge(INSTANCE_PROC_C, OutputSlot.DEFAULT_OUTPUT_SLOT_ID, INSTANCE_AGGREGATOR, FinalNode.INPUT_C.getId());
         log.info("已定义所有节点连接。");
 
-        // 4. 构建并返回不可变的 DagDefinition
         try {
             DagDefinition<ParalleContext> definition = builder.build();
             log.info("DataParallel DAG 定义构建成功！");
             return definition;
         } catch (IllegalStateException e) {
             log.error("构建 DataParallel DAG 定义失败: {}", e.getMessage(), e);
-            // 在实际应用中，可能需要更健壮的错误处理
             throw new RuntimeException("Failed to build DataParallel DAG definition", e);
         }
+    }
+
+    // --- 手动配置核心组件 Bean ---
+
+    /**
+     * 创建特定于 ParalleContext 的 NodeExecutor Bean。
+     */
+    @Bean
+    public NodeExecutor<ParalleContext> paralleContextNodeExecutor(
+            NodeRegistry<ParalleContext> registry, // 注入特定上下文的 Registry
+            DagFrameworkProperties properties,     // 注入配置属性
+            ObjectProvider<Scheduler> schedulerProvider, // 可选注入调度器
+            ObjectProvider<List<DagMonitorListener>> listenersProvider // 可选注入监听器
+    ) {
+        log.info("创建 ParalleContext 的 NodeExecutor...");
+        Scheduler scheduler = schedulerProvider.getIfAvailable(Schedulers::boundedElastic);
+        List<DagMonitorListener> listeners = listenersProvider.getIfAvailable(Collections::emptyList);
+        return new StandardNodeExecutor<>( // 使用 StandardNodeExecutor 实现
+                registry,
+                properties.getNode().getDefaultTimeout(),
+                scheduler,
+                listeners
+        );
+    }
+
+    /**
+     * 创建特定于 ParalleContext 的核心 DagEngine Bean。
+     */
+    @Bean
+    public DagEngine<ParalleContext> paralleContextDagEngine( // 返回核心接口类型
+                                                              NodeRegistry<ParalleContext> registry,     // 注入 Registry
+                                                              NodeExecutor<ParalleContext> executor,     // 注入上面创建的 Executor
+                                                              DagFrameworkProperties properties          // 注入配置属性
+    ) {
+        log.info("创建 ParalleContext 的 DagEngine...");
+        return new StandardDagEngine<>( // 使用 StandardDagEngine 实现
+                registry,
+                executor,
+                properties.getEngine().getConcurrencyLevel()
+        );
+    }
+
+    /**
+     * 创建特定于 ParalleContext 的 SpringDagEngine Bean。
+     * 这个 Bean 将被 DagUsageExample 注入。
+     */
+    @Bean
+    public SpringDagEngine<ParalleContext> paralleContextSpringDagEngine(
+            DagEngine<ParalleContext> dagEngine // 注入上面创建的核心引擎
+    ) {
+        log.info("创建 ParalleContext 的 SpringDagEngine...");
+        return new SpringDagEngine<>(dagEngine);
     }
 }
