@@ -65,7 +65,6 @@ public class StandardDagEngine<C> implements DagEngine<C> {
         final AtomicBoolean failFastTriggered = new AtomicBoolean(false);
         final AtomicBoolean overallSuccess = new AtomicBoolean(true);
         final AtomicInteger completedNodeCounter = new AtomicInteger(0);
-        final ConditionInputAccessor<C> conditionAccessor = createConditionInputAccessor(completedResults);
 
         return Flux.defer(() -> {
             log.debug("[RequestId: {}][DAG: '{}'] Initializing execution flows for all {} nodes.", actualRequestId, dagName, totalNodes);
@@ -73,7 +72,7 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                     .map(nodeName -> getNodeMono( // 递归获取或创建每个节点的 Mono
                             nodeName, initialContext, dagDefinition, nodeExecutionMonos, completedResults,
                             failFastTriggered, overallSuccess, completedNodeCounter, totalNodes,
-                            conditionAccessor, actualRequestId, dagName)
+                            actualRequestId, dagName)
                             .then() // 我们只需要完成信号，结果通过 completedResults 共享
                     )
                     .collect(Collectors.toList());
@@ -117,7 +116,6 @@ public class StandardDagEngine<C> implements DagEngine<C> {
             AtomicBoolean overallSuccess,
             AtomicInteger completedNodeCounter,
             int totalNodes,
-            ConditionInputAccessor<C> conditionAccessor,
             String requestId,
             String dagName) {
 
@@ -152,7 +150,7 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                         return getNodeMono(
                                                 upstreamName, context, dagDefinition, nodeExecutionMonos, completedResults,
                                                 failFastTriggered, overallSuccess, completedNodeCounter, totalNodes,
-                                                conditionAccessor, requestId, dagName);
+                                                requestId, dagName);
                                     })
                                     .collect(Collectors.toList());
                         }
@@ -199,13 +197,55 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                             log.trace("[RequestId: {}][DAG: '{}'] Checking edge {} -> {}. Upstream status: {}", requestId, dagName, upstreamName, instanceName, upstreamResult.getStatus());
 
                                             if (upstreamResult.isSuccess()) {
-                                                boolean conditionMet;
+                                                boolean conditionMet = false;
+                                                ConditionBase<C> condition = edge.getCondition();
+                                                String conditionTypeName = condition.getClass().getSimpleName(); // 用于日志
+
                                                 try {
-                                                    conditionMet = edge.getCondition().evaluate(context, conditionAccessor);
-                                                    log.trace("[RequestId: {}][DAG: '{}'] Condition evaluation for edge {} -> {}: {}", requestId, dagName, upstreamName, instanceName, conditionMet);
+                                                    // 根据条件类型进行评估
+                                                    if (condition instanceof DirectUpstreamCondition) {
+                                                        @SuppressWarnings({"rawtypes", "unchecked"}) // 必须抑制原始类型和可能的未检查调用警告
+                                                        DirectUpstreamCondition rawDirectCond = (DirectUpstreamCondition) condition;
+                                                        conditionMet = rawDirectCond.evaluate(context, upstreamResult);
+                                                        log.trace("[RequestId: {}][DAG: '{}'] Evaluated DirectUpstreamCondition for edge {} -> {}: {}", requestId, dagName, upstreamName, instanceName, conditionMet);
+
+                                                    } else if (condition instanceof LocalInputCondition) {
+                                                        LocalInputCondition<C> localCond = (LocalInputCondition<C>) condition;
+                                                        // 创建 LocalInputAccessor (需要传入 dagDefinition 和下游节点名 instanceName)
+                                                        LocalInputAccessor<C> localAccessor = new xyz.vvrf.reactor.dag.execution.DefaultLocalInputAccessor<>(completedResults, dagDefinition, instanceName);
+                                                        conditionMet = localCond.evaluate(context, localAccessor);
+                                                        log.trace("[RequestId: {}][DAG: '{}'] Evaluated LocalInputCondition for edge {} -> {}: {}", requestId, dagName, upstreamName, instanceName, conditionMet);
+
+                                                    } else if (condition instanceof DeclaredDependencyCondition) {
+                                                        DeclaredDependencyCondition<C> declaredCond = (DeclaredDependencyCondition<C>) condition;
+                                                        Set<String> explicitDeps = declaredCond.getRequiredNodeDependencies();
+                                                        Set<String> allowedNodes = new HashSet<>(explicitDeps);
+                                                        allowedNodes.add(upstreamName); // 添加直接上游
+
+                                                        // 创建受限的全局 Accessor (复用之前的 Restricted 实现)
+                                                        ConditionInputAccessor<C> restrictedAccessor = new RestrictedConditionInputAccessor<>(
+                                                                completedResults, allowedNodes, upstreamName);
+                                                        conditionMet = declaredCond.evaluate(context, restrictedAccessor);
+                                                        log.trace("[RequestId: {}][DAG: '{}'] Evaluated DeclaredDependencyCondition for edge {} -> {} (Allowed: {}): {}",
+                                                                requestId, dagName, upstreamName, instanceName, allowedNodes, conditionMet);
+                                                    } else {
+                                                        // 未知条件类型，视为失败
+                                                        log.error("[RequestId: {}][DAG: '{}'] Unknown condition type '{}' for edge {} -> {}. Treating as false.",
+                                                                requestId, dagName, condition.getClass().getName(), upstreamName, instanceName);
+                                                        conditionMet = false;
+                                                        // 或者抛出异常？当前选择视为 false
+                                                    }
+
+                                                } catch (IllegalArgumentException accessError) {
+                                                    // 捕获 RestrictedConditionInputAccessor 的访问错误
+                                                    log.error("[RequestId: {}][DAG: '{}'] Condition ({}) evaluation for edge {} -> {} failed due to restricted access: {}. Treating as node failure.",
+                                                            requestId, dagName, conditionTypeName, upstreamName, instanceName, accessError.getMessage());
+                                                    handleFailure(instanceName, accessError, dagDefinition, completedResults, failFastTriggered, overallSuccess, completedNodeCounter, requestId, dagName);
+                                                    return Mono.just(completedResults.get(instanceName));
                                                 } catch (Exception e) {
-                                                    log.error("[RequestId: {}][DAG: '{}'] Condition evaluation failed for edge {} -> {}. Treating as node failure.",
-                                                            requestId, dagName, upstreamName, instanceName, e);
+                                                    // 捕获条件评估本身的其他异常
+                                                    log.error("[RequestId: {}][DAG: '{}'] Condition ({}) evaluation failed unexpectedly for edge {} -> {}. Treating as node failure.",
+                                                            requestId, dagName, conditionTypeName, upstreamName, instanceName, e);
                                                     handleFailure(instanceName, e, dagDefinition, completedResults, failFastTriggered, overallSuccess, completedNodeCounter, requestId, dagName);
                                                     return Mono.just(completedResults.get(instanceName));
                                                 }
@@ -231,8 +271,7 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                         if (upstreamErrorInFailFast) {
                                             canExecute = false;
                                         }
-                                        // TODO: Consider adding logic here: if all *required* inputs are from failed/skipped nodes, set canExecute = false?
-                                        // Currently relies on node implementation checking InputAccessor.
+                                        // TODO: 考虑更复杂的跳过逻辑，例如如果所有必需输入都被跳过？
                                     }
 
                                     // --- 5. 执行或跳过 ---

@@ -155,39 +155,43 @@ public class DagDefinitionBuilder<C> {
         return this;
     }
 
-    // --- 边定义方法 (逻辑不变, 确保验证使用注册表) ---
-
+    /**
+     * 添加一条带有指定条件的边。
+     *
+     * @param upstreamInstanceName   上游节点实例名
+     * @param outputSlotId           上游输出槽 ID
+     * @param downstreamInstanceName 下游节点实例名
+     * @param inputSlotId            下游输入槽 ID
+     * @param condition              边的激活条件 (ConditionBase 类型)。如果为 null，则使用 AlwaysTrue。
+     * @return this builder
+     */
     public DagDefinitionBuilder<C> addEdge(String upstreamInstanceName, String outputSlotId,
                                            String downstreamInstanceName, String inputSlotId,
-                                           Condition<C> condition) {
+                                           ConditionBase<C> condition) { // 参数类型改为 ConditionBase
         Objects.requireNonNull(upstreamInstanceName, "上游实例名称不能为空");
         Objects.requireNonNull(outputSlotId, "输出槽 ID 不能为空");
         Objects.requireNonNull(downstreamInstanceName, "下游实例名称不能为空");
         Objects.requireNonNull(inputSlotId, "输入槽 ID 不能为空");
 
+        // --- 节点和插槽验证逻辑不变 ---
         NodeDefinition upstreamDef = getNodeDefinitionOrThrow(upstreamInstanceName);
         NodeDefinition downstreamDef = getNodeDefinitionOrThrow(downstreamInstanceName);
-
-        // 从注册表获取元数据进行验证
         NodeRegistry.NodeMetadata upstreamMeta = nodeRegistry.getNodeMetadata(upstreamDef.getNodeTypeId())
                 .orElseThrow(() -> new IllegalStateException("上游节点类型 '" + upstreamDef.getNodeTypeId() + "' 的元数据在注册表中未找到。"));
         NodeRegistry.NodeMetadata downstreamMeta = nodeRegistry.getNodeMetadata(downstreamDef.getNodeTypeId())
                 .orElseThrow(() -> new IllegalStateException("下游节点类型 '" + downstreamDef.getNodeTypeId() + "' 的元数据在注册表中未找到。"));
-
-        // 验证插槽存在且类型兼容
         OutputSlot<?> outputSlot = upstreamMeta.findOutputSlot(outputSlotId)
                 .orElseThrow(() -> new IllegalArgumentException(String.format("在节点类型 '%s' (实例: '%s') 上找不到输出槽 '%s'。",
                         outputSlotId, upstreamDef.getNodeTypeId(), upstreamInstanceName)));
-
         InputSlot<?> inputSlot = downstreamMeta.findInputSlot(inputSlotId)
                 .orElseThrow(() -> new IllegalArgumentException(String.format("在节点类型 '%s' (实例: '%s') 上找不到输入槽 '%s'。",
                         inputSlotId, downstreamDef.getNodeTypeId(), downstreamInstanceName)));
-
         if (!inputSlot.getType().isAssignableFrom(outputSlot.getType())) {
             throw new IllegalArgumentException(String.format("边 %s[%s] -> %s[%s] 类型不匹配。需要输入类型: %s, 提供输出类型: %s。",
                     upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId,
                     inputSlot.getType().getName(), outputSlot.getType().getName()));
         }
+        // --- 验证结束 ---
 
         // 检查重复边（相同的源槽到相同的目标槽）
         boolean edgeExists = edgeDefinitions.stream().anyMatch(e ->
@@ -196,32 +200,64 @@ public class DagDefinitionBuilder<C> {
                         e.getDownstreamInstanceName().equals(downstreamInstanceName) &&
                         e.getInputSlotId().equals(inputSlotId));
         if (edgeExists) {
-            // 如果条件不同，是否允许重复边？目前不允许完全重复。
             log.warn("DAG '{}': 检测到重复边 (相同的源/目标槽): {}[{}] -> {}[{}]. 忽略添加。",
                     dagName, upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId);
-            return this; // 或者抛出异常
+            return this;
         }
+
+        // --- 新增：验证 DeclaredDependencyCondition 的依赖是否存在 ---
+        if (condition instanceof DeclaredDependencyCondition) {
+            Set<String> declaredDeps = ((DeclaredDependencyCondition<C>) condition).getRequiredNodeDependencies();
+            if (declaredDeps == null) {
+                throw new IllegalArgumentException(String.format(
+                        "边 %s -> %s 的 DeclaredDependencyCondition 不能返回 null 的依赖集合。",
+                        upstreamInstanceName, downstreamInstanceName));
+            }
+            for (String depName : declaredDeps) {
+                if (!nodeDefinitions.containsKey(depName)) {
+                    throw new IllegalArgumentException(String.format(
+                            "边 %s -> %s 的 DeclaredDependencyCondition 声明了不存在的节点依赖 '%s'。",
+                            upstreamInstanceName, downstreamInstanceName, depName));
+                }
+                if (depName.equals(upstreamInstanceName)) {
+                    log.warn("边 {} -> {} 的 DeclaredDependencyCondition 显式声明了对直接上游 '{}' 的依赖，这是不必要的。",
+                            upstreamInstanceName, downstreamInstanceName, upstreamInstanceName);
+                }
+            }
+        }
+        // --- 验证结束 ---
 
 
         EdgeDefinition<C> edgeDef = new EdgeDefinition<>(upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, condition);
         edgeDefinitions.add(edgeDef);
-        log.debug("DAG '{}': 添加了边 {}[{}] -> {}[{}] {}", dagName, upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, condition != null ? "带条件" : "无条件");
+        log.debug("DAG '{}': 添加了边 {}[{}] -> {}[{}] (条件类型: {})", dagName, upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, edgeDef.getCondition().getClass().getSimpleName()); // 使用 getSimpleName
         return this;
     }
 
+    /**
+     * 添加一条无条件的边 (使用 AlwaysTrue)。
+     */
     public DagDefinitionBuilder<C> addEdge(String upstreamInstanceName, String outputSlotId,
                                            String downstreamInstanceName, String inputSlotId) {
-        return addEdge(upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, null);
+        // 内部调用，传递 null condition，构造函数会处理为 alwaysTrue
+        return addEdge(upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, (ConditionBase<C>) null);
     }
 
+    /**
+     * 添加一条从上游默认输出槽出发的带条件的边。
+     */
     public DagDefinitionBuilder<C> addEdge(String upstreamInstanceName,
                                            String downstreamInstanceName, String inputSlotId,
-                                           Condition<C> condition) {
+                                           ConditionBase<C> condition) { // 参数类型改为 ConditionBase
         return addEdge(upstreamInstanceName, OutputSlot.DEFAULT_OUTPUT_SLOT_ID, downstreamInstanceName, inputSlotId, condition);
     }
+
+    /**
+     * 添加一条从上游默认输出槽出发的无条件边。
+     */
     public DagDefinitionBuilder<C> addEdge(String upstreamInstanceName,
                                            String downstreamInstanceName, String inputSlotId) {
-        return addEdge(upstreamInstanceName, OutputSlot.DEFAULT_OUTPUT_SLOT_ID, downstreamInstanceName, inputSlotId, null);
+        return addEdge(upstreamInstanceName, OutputSlot.DEFAULT_OUTPUT_SLOT_ID, downstreamInstanceName, inputSlotId, (ConditionBase<C>) null);
     }
 
 
@@ -364,22 +400,34 @@ public class DagDefinitionBuilder<C> {
             String downName = escapeDotString(edge.getDownstreamInstanceName());
             String outSlot = escapeDotString(edge.getOutputSlotId());
             String inSlot = escapeDotString(edge.getInputSlotId());
-            Condition<C> condition = edge.getCondition();
+            ConditionBase<C> condition = edge.getCondition();
 
-            // 边标签：输出槽 -> 输入槽
-            String edgeLabel = String.format("%s -> %s", outSlot, inSlot);
+            String baseEdgeLabel = String.format("%s -> %s", outSlot, inSlot);
             List<String> attributes = new ArrayList<>();
-            attributes.add(String.format("label=\"%s\"", edgeLabel));
+            String finalEdgeLabel = baseEdgeLabel; // 默认标签
 
-            // 如果有条件，添加条件信息到标签，并使用虚线样式
-            if (condition != Condition.alwaysTrue()) {
-                String conditionName = escapeDotString(condition.getClass().getSimpleName());
-                // 更新标签以包含条件
-                edgeLabel = String.format("%s\\n[C: %s]", edgeLabel, conditionName);
-                attributes.set(0, String.format("label=\"%s\"", edgeLabel)); // 替换原标签
-                attributes.add("style=dashed");
-                attributes.add("color=blue"); // 可选：用颜色区分条件边
+            // 根据条件类型设置样式和附加标签
+            if (condition instanceof DirectUpstreamCondition.AlwaysTrueCondition) {
+                // 无条件边，使用默认样式
+            } else if (condition instanceof DirectUpstreamCondition) {
+                finalEdgeLabel = String.format("%s\\n(Direct)", baseEdgeLabel);
+                attributes.add("color=darkgreen"); // 可选：区分直接条件
+            } else if (condition instanceof LocalInputCondition) {
+                finalEdgeLabel = String.format("%s\\n(Local)", baseEdgeLabel);
+                attributes.add("style=dotted"); // 使用点线表示局部条件
+                attributes.add("color=orange");
+            } else if (condition instanceof DeclaredDependencyCondition) {
+                Set<String> deps = ((DeclaredDependencyCondition<C>) condition).getRequiredNodeDependencies();
+                String depsStr = deps.stream().map(this::escapeDotString).collect(Collectors.joining(", "));
+                finalEdgeLabel = String.format("%s\\n(Deps: %s)", baseEdgeLabel, depsStr.isEmpty() ? "None" : depsStr);
+                attributes.add("style=dashed"); // 使用虚线表示全局依赖条件
+                attributes.add("color=blue");
+            } else {
+                finalEdgeLabel = String.format("%s\\n(Unknown Type)", baseEdgeLabel);
+                attributes.add("color=red"); // 标记未知类型
             }
+
+            attributes.add(0, String.format("label=\"%s\"", finalEdgeLabel)); // 插入最终标签
 
             dot.append(String.format("  \"%s\" -> \"%s\" [%s];\n",
                     upName, downName, String.join(", ", attributes)));
