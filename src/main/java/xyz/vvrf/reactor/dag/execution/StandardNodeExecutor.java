@@ -29,6 +29,7 @@ public class StandardNodeExecutor<C> implements NodeExecutor<C> {
     private final Duration defaultNodeTimeout;
     private final Scheduler nodeExecutionScheduler;
     private final List<DagMonitorListener> monitorListeners; // 监听器是通用的
+    private final Class<C> contextType;
 
     /**
      * 创建 StandardNodeExecutor 实例。
@@ -46,7 +47,7 @@ public class StandardNodeExecutor<C> implements NodeExecutor<C> {
         this.defaultNodeTimeout = Objects.requireNonNull(defaultNodeTimeout, "Default node timeout cannot be null");
         this.nodeExecutionScheduler = Objects.requireNonNull(nodeExecutionScheduler, "Node execution scheduler cannot be null");
         this.monitorListeners = (monitorListeners != null) ? Collections.unmodifiableList(new ArrayList<>(monitorListeners)) : Collections.emptyList();
-
+        this.contextType = nodeRegistry.getContextType();
         log.info("StandardNodeExecutor for context '{}' initialized. Default timeout: {}, Scheduler: {}, Listeners: {}",
                 nodeRegistry.getContextType().getSimpleName(), // 记录上下文类型
                 defaultNodeTimeout,
@@ -62,6 +63,11 @@ public class StandardNodeExecutor<C> implements NodeExecutor<C> {
      */
     public StandardNodeExecutor(NodeRegistry<C> nodeRegistry, Duration defaultNodeTimeout) {
         this(nodeRegistry, defaultNodeTimeout, Schedulers.boundedElastic(), Collections.emptyList());
+    }
+
+    @Override
+    public Class<C> getContextType() {
+        return this.contextType; // 实现接口方法
     }
 
     @Override

@@ -9,7 +9,7 @@ import java.util.Set;
  * 与传递给 DagNode.execute 的 InputAccessor 不同，后者只包含激活边的数据。
  *
  * @param <C> 上下文类型
- * @author Refactored
+ * @author Refactored (注释更新)
  */
 public interface ConditionInputAccessor<C> {
 
@@ -42,7 +42,7 @@ public interface ConditionInputAccessor<C> {
 
     /**
      * 获取所有已完成的节点实例名称集合。
-     * @return 已完成节点名称的集合。
+     * @return 已完成节点名称的不可变集合。
      */
     Set<String> getCompletedNodeNames();
 
