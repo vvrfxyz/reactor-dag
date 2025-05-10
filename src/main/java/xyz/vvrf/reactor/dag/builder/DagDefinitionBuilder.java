@@ -1,5 +1,10 @@
 package xyz.vvrf.reactor.dag.builder;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import reactor.util.retry.Retry;
@@ -16,7 +21,7 @@ import java.util.stream.Collectors;
  * 用于以编程方式构建不可变的 DagDefinition 数据结构。
  * 需要一个 NodeRegistry 来验证节点类型和插槽。
  * 允许实例特定的配置（重试、超时）。
- * 新增：构建成功后可生成 DOT 图形描述代码。
+ * 新增：构建成功后可生成 DOT 图形描述代码和 Cytoscape.js JSON 描述。
  *
  * @param <C> 上下文类型。
  * @author ruifeng.wen
@@ -34,6 +39,11 @@ public class DagDefinitionBuilder<C> {
 
     @Getter
     private String lastGeneratedDotCode = null;
+    @Getter
+    private String lastGeneratedCytoscapeJsJson = null; // 修改字段名
+
+    // 用于生成JSON的ObjectMapper实例，可以考虑注入或静态化
+    private static final ObjectMapper jsonMapper = new ObjectMapper();
 
 
     public DagDefinitionBuilder(Class<C> contextType, String dagName, NodeRegistry<C> nodeRegistry) {
@@ -62,7 +72,7 @@ public class DagDefinitionBuilder<C> {
         }
         if (!nodeRegistry.getNodeMetadata(nodeTypeId).isPresent()) {
             throw new IllegalArgumentException(String.format("在 NodeRegistry (上下文: '%s') 中找不到节点类型 ID '%s'。无法为 DAG '%s' 添加实例 '%s'。",
-                    nodeTypeId, contextType.getSimpleName(), instanceName, dagName));
+                    contextType.getSimpleName(), nodeTypeId, dagName, instanceName));
         }
 
         NodeDefinition nodeDef = new NodeDefinition(instanceName, nodeTypeId, new HashMap<>());
@@ -85,8 +95,8 @@ public class DagDefinitionBuilder<C> {
 
     public DagDefinitionBuilder<C> withTimeout(String instanceName, Duration timeout) {
         Objects.requireNonNull(timeout, "实例 " + instanceName + " 的 Timeout 不能为空");
-        if (timeout.isNegative()) {
-            throw new IllegalArgumentException("实例 " + instanceName + " 的 Timeout 不能为负数");
+        if (timeout.isNegative() || timeout.isZero()) {
+            throw new IllegalArgumentException("实例 " + instanceName + " 的 Timeout 必须为正数");
         }
         NodeDefinition nodeDef = getNodeDefinitionOrThrow(instanceName);
         nodeDef.getConfigurationInternal().put(StandardNodeExecutor.CONFIG_KEY_TIMEOUT, timeout);
@@ -97,7 +107,7 @@ public class DagDefinitionBuilder<C> {
     public DagDefinitionBuilder<C> withConfiguration(String instanceName, String key, Object value) {
         Objects.requireNonNull(key, "实例 " + instanceName + " 的配置键不能为空");
         if (key.equals(StandardNodeExecutor.CONFIG_KEY_RETRY) || key.equals(StandardNodeExecutor.CONFIG_KEY_TIMEOUT)) {
-            log.warn("DAG '{}': 在实例 '{}' 上为保留键 '{}' 使用了通用的 withConfiguration。考虑使用 withRetry/withTimeout 方法。", dagName, key, instanceName);
+            log.warn("DAG '{}': 在实例 '{}' 上为保留键 '{}' 使用了通用的 withConfiguration。考虑使用 withRetry/withTimeout 方法。", dagName, instanceName, key);
         }
         NodeDefinition nodeDef = getNodeDefinitionOrThrow(instanceName);
         nodeDef.getConfigurationInternal().put(key, value);
@@ -121,10 +131,10 @@ public class DagDefinitionBuilder<C> {
                 .orElseThrow(() -> new IllegalStateException("下游节点类型 '" + downstreamDef.getNodeTypeId() + "' 的元数据在注册表中未找到。"));
         OutputSlot<?> outputSlot = upstreamMeta.findOutputSlot(outputSlotId)
                 .orElseThrow(() -> new IllegalArgumentException(String.format("在节点类型 '%s' (实例: '%s') 上找不到输出槽 '%s'。",
-                        outputSlotId, upstreamDef.getNodeTypeId(), upstreamInstanceName)));
+                        upstreamDef.getNodeTypeId(), upstreamInstanceName, outputSlotId)));
         InputSlot<?> inputSlot = downstreamMeta.findInputSlot(inputSlotId)
                 .orElseThrow(() -> new IllegalArgumentException(String.format("在节点类型 '%s' (实例: '%s') 上找不到输入槽 '%s'。",
-                        inputSlotId, downstreamDef.getNodeTypeId(), downstreamInstanceName)));
+                        downstreamDef.getNodeTypeId(), downstreamInstanceName, inputSlotId)));
         if (!inputSlot.getType().isAssignableFrom(outputSlot.getType())) {
             throw new IllegalArgumentException(String.format("边 %s[%s] -> %s[%s] 类型不匹配。需要输入类型: %s, 提供输出类型: %s。",
                     upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId,
@@ -164,7 +174,7 @@ public class DagDefinitionBuilder<C> {
 
         EdgeDefinition<C> edgeDef = new EdgeDefinition<>(upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, condition);
         edgeDefinitions.add(edgeDef);
-        log.debug("DAG '{}': 添加了边 {}[{}] -> {}[{}] (条件类型: {})", dagName, upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, edgeDef.getCondition().getClass().getSimpleName());
+        log.debug("DAG '{}': 添加了边 {}[{}] -> {}[{}] (条件类型: {})", dagName, upstreamInstanceName, outputSlotId, downstreamInstanceName, inputSlotId, edgeDef.getCondition() == null ? "None" : edgeDef.getCondition().getClass().getSimpleName());
         return this;
     }
 
@@ -229,6 +239,15 @@ public class DagDefinitionBuilder<C> {
             log.error("DAG '{}': 生成 DOT 图形描述时发生错误: {}", dagName, e.getMessage(), e);
         }
 
+        // 修改：生成 Cytoscape.js JSON
+        try {
+            this.lastGeneratedCytoscapeJsJson = generateCytoscapeJsJsonRepresentation(finalNodeDefinitions, finalEdgeDefinitions);
+            log.info("DAG '{}' Cytoscape.js JSON 描述:\n--- JSON BEGIN ---\n{}\n--- JSON END ---", dagName, lastGeneratedCytoscapeJsJson);
+        } catch (Exception e) {
+            log.error("DAG '{}': 生成 Cytoscape.js JSON 描述时发生错误: {}", dagName, e.getMessage(), e);
+        }
+
+
         return new DefaultDagDefinition<>(
                 dagName,
                 contextType,
@@ -254,20 +273,16 @@ public class DagDefinitionBuilder<C> {
         log.info("DAG '{}' 最终结构 (文本):", dagName);
         StringBuilder builder = new StringBuilder("\n节点:\n");
         builder.append(String.format("%-30s | %-40s | %s\n", "实例名称", "类型 ID", "配置"));
-        builder
-//                .append("-".repeat(100))
-                .append("\n");
+        builder.append("\n");
         finalNodeDefs.forEach((name, def) -> builder.append(String.format("%-30s | %-40s | %s\n", name, def.getNodeTypeId(), def.getConfiguration())));
 
         builder.append("\n边:\n");
         builder.append(String.format("%-30s [%-20s] ---> %-30s [%-20s] | %s\n", "上游", "输出槽", "下游", "输入槽", "条件"));
-        builder
-//                .append("-".repeat(120))
-                .append("\n");
+        builder.append("\n");
         edgeDefinitions.forEach(edge -> builder.append(String.format("%-30s [%-20s] ---> %-30s [%-20s] | %s\n",
                 edge.getUpstreamInstanceName(), edge.getOutputSlotId(),
                 edge.getDownstreamInstanceName(), edge.getInputSlotId(),
-                (edge.getCondition() instanceof DirectUpstreamCondition.AlwaysTrueCondition) ? "总是 True" : edge.getCondition().getClass().getSimpleName())));
+                (edge.getCondition() == null || edge.getCondition() instanceof DirectUpstreamCondition.AlwaysTrueCondition) ? "总是 True" : edge.getCondition().getClass().getSimpleName())));
 
         log.info(builder.toString());
     }
@@ -299,7 +314,7 @@ public class DagDefinitionBuilder<C> {
             List<String> attributes = new ArrayList<>();
             String finalEdgeLabel = baseEdgeLabel;
 
-            if (condition instanceof DirectUpstreamCondition.AlwaysTrueCondition) {
+            if (condition == null || condition instanceof DirectUpstreamCondition.AlwaysTrueCondition) {
                 // No special styling
             } else if (condition instanceof DirectUpstreamCondition) {
                 finalEdgeLabel = String.format("%s\\n(Direct)", baseEdgeLabel);
@@ -314,9 +329,9 @@ public class DagDefinitionBuilder<C> {
                 finalEdgeLabel = String.format("%s\\n(Deps: %s)", baseEdgeLabel, depsStr.isEmpty() ? "None" : depsStr);
                 attributes.add("style=dashed");
                 attributes.add("color=blue");
-            } else {
-                finalEdgeLabel = String.format("%s\\n(Unknown Type)", baseEdgeLabel);
-                attributes.add("color=red");
+            } else { // 其他自定义条件
+                finalEdgeLabel = String.format("%s\\n(%s)", baseEdgeLabel, escapeDotString(condition.getClass().getSimpleName()));
+                attributes.add("color=purple");
             }
 
             attributes.add(0, String.format("label=\"%s\"", finalEdgeLabel));
@@ -328,6 +343,75 @@ public class DagDefinitionBuilder<C> {
         dot.append("}\n");
         return dot.toString();
     }
+
+    // 修改方法：生成 Cytoscape.js JSON 表示
+    private String generateCytoscapeJsJsonRepresentation(Map<String, NodeDefinition> nodeDefs, List<EdgeDefinition<C>> edgeDefs) throws JsonProcessingException {
+        ObjectNode rootNode = jsonMapper.createObjectNode();
+        ArrayNode elementsArray = jsonMapper.createArrayNode();
+
+        // 生成节点
+        for (NodeDefinition nodeDef : nodeDefs.values()) {
+            ObjectNode cyNodeContainer = jsonMapper.createObjectNode();
+            cyNodeContainer.put("group", "nodes");
+            ObjectNode nodeData = jsonMapper.createObjectNode();
+            nodeData.put("id", nodeDef.getInstanceName());
+            // Cytoscape.js label can use \n directly for newlines
+            nodeData.put("label", String.format("%s\n(%s)", nodeDef.getInstanceName(), nodeDef.getNodeTypeId()));
+            nodeData.put("typeId", nodeDef.getNodeTypeId());
+            // Store base label for potential updates if status is added to label by frontend
+            nodeData.put("baseLabel", String.format("%s\n(%s)", nodeDef.getInstanceName(), nodeDef.getNodeTypeId()));
+            cyNodeContainer.set("data", nodeData);
+            elementsArray.add(cyNodeContainer);
+        }
+
+        // 生成边
+        int edgeCounter = 0;
+        for (EdgeDefinition<C> edgeDef : edgeDefs) {
+            ObjectNode cyEdgeContainer = jsonMapper.createObjectNode();
+            cyEdgeContainer.put("group", "edges");
+            ObjectNode edgeData = jsonMapper.createObjectNode();
+
+            // Generate a unique ID for the edge
+            edgeData.put("id", "edge_" + edgeDef.getUpstreamInstanceName() + "_" + edgeDef.getOutputSlotId() + "_" + edgeDef.getDownstreamInstanceName() + "_" + edgeDef.getInputSlotId() + "_" + (edgeCounter++));
+            edgeData.put("source", edgeDef.getUpstreamInstanceName());
+            edgeData.put("target", edgeDef.getDownstreamInstanceName());
+
+            String baseEdgeLabel = String.format("%s -> %s", edgeDef.getOutputSlotId(), edgeDef.getInputSlotId());
+            String finalEdgeLabel = baseEdgeLabel;
+            ConditionBase<C> condition = edgeDef.getCondition();
+            String conditionType = "DEFAULT";
+
+
+            if (condition == null || condition instanceof DirectUpstreamCondition.AlwaysTrueCondition) {
+                conditionType = "ALWAYS_TRUE";
+            } else if (condition instanceof DirectUpstreamCondition) {
+                finalEdgeLabel = String.format("%s\n(Direct)", baseEdgeLabel);
+                conditionType = "DIRECT";
+            } else if (condition instanceof LocalInputCondition) {
+                finalEdgeLabel = String.format("%s\n(Local)", baseEdgeLabel);
+                conditionType = "LOCAL_INPUT";
+            } else if (condition instanceof DeclaredDependencyCondition) {
+                Set<String> deps = ((DeclaredDependencyCondition<C>) condition).getRequiredNodeDependencies();
+                String depsStr = deps.stream().collect(Collectors.joining(", "));
+                finalEdgeLabel = String.format("%s\n(Deps: %s)", baseEdgeLabel, depsStr.isEmpty() ? "None" : depsStr);
+                conditionType = "DECLARED_DEPENDENCY";
+            } else { // 其他自定义条件
+                finalEdgeLabel = String.format("%s\n(%s)", baseEdgeLabel, condition.getClass().getSimpleName());
+                conditionType = "CUSTOM_" + condition.getClass().getSimpleName().toUpperCase();
+            }
+            edgeData.put("label", finalEdgeLabel);
+            edgeData.put("rawLabel", baseEdgeLabel); // Store raw label if needed
+            edgeData.put("conditionType", conditionType); // For styling in frontend
+
+            cyEdgeContainer.set("data", edgeData);
+            elementsArray.add(cyEdgeContainer);
+        }
+
+        rootNode.set("elements", elementsArray);
+
+        return jsonMapper.writerWithDefaultPrettyPrinter().writeValueAsString(rootNode);
+    }
+
 
     private String escapeDotString(String input) {
         if (input == null) {
@@ -378,3 +462,4 @@ public class DagDefinitionBuilder<C> {
         @Override public Set<String> getAllNodeInstanceNames() { return allNodeNames; }
     }
 }
+

@@ -94,7 +94,8 @@ public class DataParalleDagConfiguration {
             // 构建并返回不可变的 DAG 定义
             DagDefinition<ParalleContext> definition = builder.build();
             String dotString = builder.getLastGeneratedDotCode();
-            dagDefinitionCache.cacheDag(definition, dotString);
+            String visJsString = builder.getLastGeneratedCytoscapeJsJson();
+            dagDefinitionCache.cacheDag(definition, dotString, visJsString);
             log.info("DataParallel DAG 定义构建成功！");
             return definition;
         } catch (IllegalStateException e) {

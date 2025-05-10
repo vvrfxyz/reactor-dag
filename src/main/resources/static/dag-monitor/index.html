@@ -4,8 +4,14 @@
     <meta charset="UTF-8">
     <title>DAG 实时监控 (按 DAG Name)</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-    <link href="https://unpkg.com/vis-network@9.1.9/styles/vis-network.min.css" rel="stylesheet" type="text/css" />
+    <!-- Cytoscape.js and Dagre layout extension -->
+    <!-- 1. Load Dagre FIRST -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+    <!-- 2. Load Cytoscape Core -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+    <!-- 3. Load Cytoscape-Dagre layout adapter -->
+    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+
     <style>
         body { font-family: 'Arial', sans-serif; display: flex; margin: 0; height: 100vh; background-color: #f0f2f5; overflow: hidden; }
         #app { display: flex; width: 100%; height: 100%; }
@@ -20,6 +26,7 @@
 
         .instances-list-container { flex-grow: 1; overflow-y: auto; padding: 0; }
         .instances-list-container h3 { padding: 15px 20px 10px; margin:0; background-color:#f9f9f9; border-bottom: 1px solid #f0f0f0; color: #555; font-size: 1.1em;}
+        .instances-list-container ul { list-style-type: none; padding: 0; margin: 0;}
         .instance-item { padding: 12px 20px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background-color 0.2s; }
         .instance-item:hover { background-color: #e6f7ff; }
         .instance-item.selected { background-color: #bae7ff; font-weight: bold; }
@@ -28,7 +35,7 @@
         .status-RUNNING { color: #1890ff; }
         .status-SUCCESS { color: #52c41a; }
         .status-FAILURE { color: #f5222d; }
-        .status-PENDING { color: #faad14; } /* For instances that appeared but not fully started */
+        .status-PENDING { color: #faad14; }
 
         #main-content { flex-grow: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; }
         .main-header { margin-bottom: 15px; }
@@ -41,13 +48,12 @@
         .status-overall.dag-failure { background-color: #fff1f0; border-color: #ffa39e; }
         .status-overall.dag-error { background-color: #fff2e8; border-color: #ffbb96; }
 
-
+        /* Use ref="graphContainerRef" in template for this div */
         #dag-graph-container { flex-grow: 1; border: 1px solid #d9d9d9; background-color: #fff; position: relative; min-height: 300px; border-radius: 4px; }
-        #dag-graph { width: 100%; height: 100%; }
 
-        .node-details-container { margin-top: 20px; max-height: 300px; overflow-y: auto; padding: 15px; background-color:#fff; border: 1px solid #d1d9e0; border-radius:5px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .node-details-container { margin-top: 20px; max-height: 250px; overflow-y: auto; padding: 15px; background-color:#fff; border: 1px solid #d1d9e0; border-radius:5px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .node-details-container h3 { margin-top:0; }
-        pre { background-color: #f7f7f7; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-size: 0.9em; max-height: 100px; overflow-y: auto; border: 1px solid #eee;}
+        pre { background-color: #f7f7f7; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-size: 0.9em; max-height: 80px; overflow-y: auto; border: 1px solid #eee;}
         .error-text { color: #cf1322; }
         .no-selection { text-align: center; color: #999; padding: 50px; font-size: 1.2em; }
     </style>
@@ -95,13 +101,13 @@
                     <p v-if="activeInstances[selectedRequestId].errorSummary"><strong>错误摘要:</strong> <pre class="error-text">{{ activeInstances[selectedRequestId].errorSummary }}</pre></p>
                 </div>
             </div>
-            <div id="dag-graph-container">
-                <div id="dag-graph"></div>
+            <!-- Use Vue ref here -->
+            <div id="dag-graph-container" ref="graphContainerRef">
             </div>
             <div v-if="selectedGraphNodeDetails" class="node-details-container">
                 <h3>节点: {{ selectedGraphNodeDetails.id }}</h3>
                 <p><strong>类型:</strong> {{ selectedGraphNodeDetails.typeId }}</p>
-                <p><strong>状态:</strong> <span :style="{ color: selectedGraphNodeDetails.statusColor }">{{ selectedGraphNodeDetails.statusText }}</span></p>
+                <p><strong>状态:</strong> <span :style="{ color: selectedGraphNodeDetails.statusColor, fontWeight: 'bold' }">{{ selectedGraphNodeDetails.statusText }}</span></p>
                 <p v-if="selectedGraphNodeDetails.durationMillis != null"><strong>总耗时:</strong> {{ selectedGraphNodeDetails.durationMillis }} ms</p>
                 <p v-if="selectedGraphNodeDetails.logicDurationMillis != null"><strong>逻辑耗时:</strong> {{ selectedGraphNodeDetails.logicDurationMillis }} ms</p>
                 <div v-if="selectedGraphNodeDetails.payloadSummary"><strong>Payload (摘要):</strong> <pre>{{ selectedGraphNodeDetails.payloadSummary }}</pre></div>
@@ -116,6 +122,18 @@
 </div>
 
 <script>
+    // 4. Register Dagre layout with Cytoscape (AFTER libraries are loaded, BEFORE Vue app creation)
+    if (typeof cytoscape !== 'undefined' && typeof dagre !== 'undefined' && typeof cytoscapeDagre !== 'undefined') {
+        cytoscape.use(cytoscapeDagre);
+        console.log("Cytoscape Dagre layout registered.");
+    } else {
+        console.error("Error registering Cytoscape Dagre layout. Libraries might not be loaded correctly.");
+        if(typeof cytoscape === 'undefined') console.error("Cytoscape is undefined");
+        if(typeof dagre === 'undefined') console.error("Dagre is undefined");
+        else if(typeof dagre.graphlib === 'undefined') console.error("Dagre.graphlib is undefined. Dagre might be loaded but incomplete.");
+        if(typeof cytoscapeDagre === 'undefined') console.error("cytoscapeDagre (the plugin function) is undefined");
+    }
+
     const { createApp, ref, reactive, computed, onMounted, watch, nextTick } = Vue;
 
     createApp({
@@ -123,45 +141,97 @@
             const dagNameInput = ref('');
             const monitoringDagName = ref('');
             const eventSource = ref(null);
-            const network = ref(null);
-            const dagDefinitionDot = ref('');
+            const cytoscapeInstance = ref(null);
+            const dagCytoscapeJsData = ref(null);
             const isMonitoring = ref(false);
 
-            const activeInstances = reactive({}); // Key: requestId, Value: { requestId, dagName, status, startTime, durationMillis, errorSummary, nodes: { nodeId: eventData } }
+            const activeInstances = reactive({});
             const selectedRequestId = ref(null);
-            const selectedGraphNodeDetails = ref(null); // Details of the node clicked in the vis.js graph
+            const selectedGraphNodeDetails = ref(null);
+            const graphContainerRef = ref(null); // Vue ref for the graph container div
 
-            const visNodes = new vis.DataSet();
-            const visEdges = new vis.DataSet();
-
-            const graphOptions = {
-                layout: { hierarchical: { enabled: true, direction: 'LR', sortMethod: 'directed', levelSeparation: 230, nodeSpacing: 150, treeSpacing: 250 }},
-                edges: { arrows: 'to', smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 }, font: { align: 'middle', size: 10 }},
-                physics: false,
-                nodes: { shape: 'box', margin: { top: 10, right: 15, bottom: 10, left: 15 }, font: { size: 12 }, borderWidth: 1, widthConstraint: { minimum: 120, maximum: 250 }, heightConstraint: { minimum: 60 }},
-                interaction: { hover: true, tooltipDelay: 200 }
-            };
-
-            const getNodeStyle = (status) => { // status from MonitoringEvent.nodeStatus (SUCCESS, FAILURE, SKIPPED, null for RUNNING)
+            const getNodeStatusStyle = (status) => {
                 switch (status) {
-                    case 'SUCCESS': return { text: 'SUCCESS', color: '#52c41a', fontColor: 'white' };
-                    case 'FAILURE': return { text: 'FAILURE', color: '#f5222d', fontColor: 'white' };
-                    case 'SKIPPED': return { text: 'SKIPPED', color: '#bfbfbf', fontColor: '#333' };
-                    case null: return { text: 'RUNNING', color: '#1890ff', fontColor: 'white' }; // Backend sends null for RUNNING/IN_PROGRESS
-                    default: return { text: 'PENDING', color: '#d9d9d9', fontColor: '#333' }; // Default for nodes not yet started
+                    case 'SUCCESS': return { text: 'SUCCESS', color: '#52c41a' };
+                    case 'FAILURE': return { text: 'FAILURE', color: '#f5222d' };
+                    case 'SKIPPED': return { text: 'SKIPPED', color: '#8c8c8c' };
+                    case 'RUNNING': return { text: 'RUNNING', color: '#1890ff' };
+                    case 'PENDING':
+                    default: return { text: 'PENDING', color: '#faad14' };
                 }
             };
 
-            const sortedInstances = computed(() => {
-                return Object.values(activeInstances)
-                    .sort((a, b) => (b.startTime || 0) - (a.startTime || 0)); // Newest first
-            });
+            const cytoscapeStylesheet = [
+                {
+                    selector: 'node',
+                    style: {
+                        'background-color': '#d9d9d9',
+                        'border-color': '#888',
+                        'border-width': 1,
+                        'label': 'data(label)',
+                        'text-valign': 'center',
+                        'text-halign': 'center',
+                        'shape': 'round-rectangle',
+                        'width': 'auto', // Use 'auto' for width based on label
+                        'height': 'auto', // Use 'auto' for height based on label
+                        'padding': '10px', // Adjust padding for node size
+                        'font-size': '10px',
+                        'color': '#333',
+                        'text-wrap': 'wrap',
+                        'text-max-width': '120px', // Control max width of text before wrapping
+                    }
+                },
+                {
+                    selector: 'node[status="PENDING"]',
+                    style: { 'background-color': '#faad14', 'border-color': '#d48806', 'color': 'white' }
+                },
+                {
+                    selector: 'node[status="RUNNING"]',
+                    style: { 'background-color': '#1890ff', 'border-color': '#005fcc', 'color': 'white' }
+                },
+                {
+                    selector: 'node[status="SUCCESS"]',
+                    style: { 'background-color': '#52c41a', 'border-color': '#389e0d', 'color': 'white' }
+                },
+                {
+                    selector: 'node[status="FAILURE"]',
+                    style: { 'background-color': '#f5222d', 'border-color': '#cf1322', 'color': 'white' }
+                },
+                {
+                    selector: 'node[status="SKIPPED"]',
+                    style: { 'background-color': '#bfbfbf', 'border-color': '#8c8c8c', 'color': '#555' }
+                },
+                {
+                    selector: 'edge',
+                    style: {
+                        'width': 1.5,
+                        'line-color': '#b3b3b3',
+                        'target-arrow-color': '#b3b3b3',
+                        'target-arrow-shape': 'triangle',
+                        'curve-style': 'bezier',
+                        'label': 'data(label)',
+                        'font-size': '8px',
+                        'color': '#555',
+                        'text-rotation': 'autorotate',
+                        'text-margin-y': -10,
+                        'text-background-color': '#ffffff',
+                        'text-background-opacity': 0.7,
+                        'text-background-padding': '2px',
+                        'z-index': 10,
+                    }
+                },
+                { selector: 'edge[conditionType="DIRECT"]', style: { 'line-color': '#006d75', 'target-arrow-color': '#006d75' } },
+                { selector: 'edge[conditionType="LOCAL_INPUT"]', style: { 'line-style': 'dotted', 'line-color': '#fa8c16', 'target-arrow-color': '#fa8c16' } },
+                { selector: 'edge[conditionType="DECLARED_DEPENDENCY"]', style: { 'line-style': 'dashed', 'line-color': '#1d39c4', 'target-arrow-color': '#1d39c4' } },
+                { selector: 'edge[conditionType^="CUSTOM_"]', style: { 'line-color': '#722ed1', 'target-arrow-color': '#722ed1' } },
+                {
+                    selector: ':selected',
+                    style: { 'border-width': 3, 'border-color': '#1890ff', 'line-color': '#1890ff', 'target-arrow-color': '#1890ff' }
+                }
+            ];
 
-            const selectedInstanceOverallStatus = computed(() => {
-                if (!selectedRequestId.value || !activeInstances[selectedRequestId.value]) return { status: null };
-                return activeInstances[selectedRequestId.value];
-            });
-
+            const sortedInstances = computed(() => Object.values(activeInstances).sort((a, b) => (b.startTime || 0) - (a.startTime || 0)));
+            const selectedInstanceOverallStatus = computed(() => (!selectedRequestId.value || !activeInstances[selectedRequestId.value]) ? { status: null } : activeInstances[selectedRequestId.value]);
             const selectedInstanceStatusMessage = computed(() => {
                 const instance = selectedInstanceOverallStatus.value;
                 if (!instance || !instance.status) return '加载中...';
@@ -169,266 +239,227 @@
                 if (instance.durationMillis) msg += ` (总耗时: ${instance.durationMillis} ms)`;
                 return msg;
             });
-
             const selectedInstanceOverallStatusClass = computed(() => {
                 const instance = selectedInstanceOverallStatus.value;
-                if (!instance || !instance.status) return 'dag-connecting';
-                return `dag-${instance.status.toLowerCase()}`;
+                return (!instance || !instance.status) ? 'dag-connecting' : `dag-${instance.status.toLowerCase()}`;
             });
-
 
             async function fetchDagDefinition(dagName) {
                 try {
-                    const response = await fetch(`/dag-monitor/dag-definition/${dagName}/dot`);
+                    const response = await fetch(`/dag-monitor/dag-definition/${dagName}/cytoscapejs`);
                     if (!response.ok) {
-                        const errorText = await response.text();
-                        alert(`无法加载DAG '${dagName}' 的定义 (HTTP ${response.status}).\n错误: ${errorText}`);
-                        stopMonitoringCleanup(); // Stop if definition fails
-                        return false;
+                        alert(`无法加载DAG '${dagName}' 的Cytoscape.js定义 (HTTP ${response.status}).\n错误: ${await response.text()}`);
+                        stopMonitoringCleanup(); return false;
                     }
-                    dagDefinitionDot.value = await response.text();
-                    if (!dagDefinitionDot.value || dagDefinitionDot.value.trim() === "") {
-                        alert(`DAG '${dagName}' 的DOT定义为空。`);
-                        stopMonitoringCleanup();
-                        return false;
+                    const jsonData = await response.json();
+                    if (!jsonData || !jsonData.elements) {
+                        alert(`DAG '${dagName}' 的Cytoscape.js定义格式不正确或为空。`);
+                        stopMonitoringCleanup(); return false;
                     }
+                    dagCytoscapeJsData.value = jsonData.elements;
+                    console.log(`Fetched Cytoscape.js definition for ${dagName}`);
                     return true;
                 } catch (error) {
-                    console.error("获取DAG DOT定义失败:", error);
-                    alert("获取DAG定义时出错: " + error.message);
-                    stopMonitoringCleanup();
-                    return false;
+                    console.error("获取DAG Cytoscape.js定义失败:", error);
+                    alert("获取DAG Cytoscape.js定义时出错: " + error.message);
+                    stopMonitoringCleanup(); return false;
                 }
             }
 
-            function drawGraphForSelectedInstance() {
-                if (!selectedRequestId.value || !dagDefinitionDot.value || !activeInstances[selectedRequestId.value]) {
-                    visNodes.clear();
-                    visEdges.clear();
-                    if (network.value) network.value.setData({ nodes: visNodes, edges: visEdges });
-                    return;
-                }
-                console.log(`Drawing graph for ${selectedRequestId.value} with DOT:`, dagDefinitionDot.value.substring(0,100) + "...");
+            function initializeCytoscapeInstance() {
+                const container = graphContainerRef.value; // Use Vue ref
+                if (container && !cytoscapeInstance.value) {
+                    console.log("Initializing Cytoscape instance...");
+                    cytoscapeInstance.value = cytoscape({
+                        container: container,
+                        style: cytoscapeStylesheet,
+                        // No initial elements or layout here, will be done by drawGraph
+                    });
 
-                try {
-                    const parsedData = vis.parseDOTNetwork(dagDefinitionDot.value);
-                    visNodes.clear();
-                    visEdges.clear();
-
-                    const instanceNodeStates = activeInstances[selectedRequestId.value].nodes || {};
-
-                    const initialNodes = parsedData.nodes.map(n => {
-                        const typeIdMatch = n.label ? n.label.match(/\(([^)]+)\)/) : null;
-                        const typeId = typeIdMatch ? typeIdMatch[1] : (n.label || n.id);
-
-                        const nodeEvent = instanceNodeStates[n.id]; // Get latest event for this node if available
-                        const style = getNodeStyle(nodeEvent ? nodeEvent.nodeStatus : 'PENDING_INIT'); // PENDING_INIT for initial draw
-
-                        return {
-                            id: n.id,
-                            label: `${n.id}\n(${typeId})\n${style.text}`,
-                            title: `ID: ${n.id}\n类型: ${typeId}\n状态: ${style.text}`,
-                            color: { background: style.color, border: vis.util.manipulateColor(style.color, 0.3).border },
-                            font: { color: style.fontColor },
-                            typeId: typeId, // Store for details panel
-                            // Store original event data if available
-                            ...(nodeEvent && { monitoringData: nodeEvent })
+                    cytoscapeInstance.value.on('tap', 'node', (event) => {
+                        const tappedNode = event.target;
+                        const nodeData = tappedNode.data();
+                        const monitoringData = nodeData.monitoringData || {};
+                        const statusStyle = getNodeStatusStyle(nodeData.status || 'PENDING');
+                        selectedGraphNodeDetails.value = {
+                            id: nodeData.id, typeId: nodeData.typeId, statusText: statusStyle.text,
+                            statusColor: statusStyle.color, durationMillis: monitoringData.durationMillis,
+                            logicDurationMillis: monitoringData.logicDurationMillis,
+                            payloadSummary: monitoringData.payloadSummary, errorSummary: monitoringData.errorSummary
                         };
                     });
-                    visNodes.add(initialNodes);
-                    visEdges.add(parsedData.edges.map(edge => ({...edge, label: edge.label ? edge.label.replace(/\\n/g, '\n') : undefined})));
-
-                    if (!network.value) {
-                        const container = document.getElementById('dag-graph');
-                        network.value = new vis.Network(container, { nodes: visNodes, edges: visEdges }, graphOptions);
-                        network.value.on("click", params => {
-                            if (params.nodes.length > 0) {
-                                const nodeId = params.nodes[0];
-                                const visNodeData = visNodes.get(nodeId);
-                                const nodeMonitoringData = activeInstances[selectedRequestId.value]?.nodes?.[nodeId] || visNodeData?.monitoringData;
-
-                                if (nodeMonitoringData) {
-                                    const style = getNodeStyle(nodeMonitoringData.nodeStatus);
-                                    selectedGraphNodeDetails.value = {
-                                        id: nodeId,
-                                        typeId: nodeMonitoringData.nodeTypeId || visNodeData.typeId,
-                                        statusText: style.text,
-                                        statusColor: style.color,
-                                        durationMillis: nodeMonitoringData.durationMillis,
-                                        logicDurationMillis: nodeMonitoringData.logicDurationMillis,
-                                        payloadSummary: nodeMonitoringData.payloadSummary,
-                                        errorSummary: nodeMonitoringData.errorSummary
-                                    };
-                                } else if (visNodeData) { // Fallback to visNodeData if no specific event data (e.g. pure PENDING)
-                                    const style = getNodeStyle('PENDING_INIT');
-                                    selectedGraphNodeDetails.value = {
-                                        id: nodeId,
-                                        typeId: visNodeData.typeId,
-                                        statusText: style.text,
-                                        statusColor: style.color,
-                                    };
-                                } else {
-                                    selectedGraphNodeDetails.value = null;
-                                }
-                            } else {
-                                selectedGraphNodeDetails.value = null;
-                            }
-                        });
-                    } else {
-                        network.value.setData({ nodes: visNodes, edges: visEdges });
-                    }
-                    network.value.fit();
-                } catch (error) {
-                    console.error("Error parsing DOT or drawing graph:", error);
-                    alert("渲染DAG图形时出错: " + error.message);
+                    cytoscapeInstance.value.on('tap', (event) => {
+                        if (event.target === cytoscapeInstance.value) selectedGraphNodeDetails.value = null;
+                    });
+                } else if (!container) {
+                    console.error("Cytoscape container (graphContainerRef) not found during initialization attempt.");
                 }
             }
 
-            function updateNodeVisualInGraph(eventData) {
-                if (!network.value || eventData.requestId !== selectedRequestId.value) return;
+            onMounted(() => {
+                // Initialize Cytoscape instance once the component is mounted and container is available
+                initializeCytoscapeInstance();
+            });
 
-                const existingVisNode = visNodes.get(eventData.instanceName);
-                if (!existingVisNode) {
-                    console.warn("Node not found in vis.DataSet for update:", eventData.instanceName);
-                    // This might happen if DOT definition is out of sync or an unexpected node appears.
-                    // For now, we'll just log. Could dynamically add it, but that might mess layout.
+            function drawGraphForSelectedInstance() {
+                if (!selectedRequestId.value || !dagCytoscapeJsData.value || !activeInstances[selectedRequestId.value]) {
+                    if (cytoscapeInstance.value) cytoscapeInstance.value.elements().remove();
                     return;
                 }
 
-                const style = getNodeStyle(eventData.nodeStatus);
-                visNodes.update({
-                    id: eventData.instanceName,
-                    label: `${eventData.instanceName}\n(${eventData.nodeTypeId || existingVisNode.typeId})\n${style.text}`,
-                    color: { background: style.color, border: vis.util.manipulateColor(style.color, 0.3).border },
-                    font: { color: style.fontColor },
-                    title: `ID: ${eventData.instanceName}\n类型: ${eventData.nodeTypeId || existingVisNode.typeId}\n状态: ${style.text}` +
-                        (eventData.durationMillis != null ? `\n总耗时: ${eventData.durationMillis}ms` : '') +
-                        (eventData.errorSummary ? `\n错误: ${eventData.errorSummary}` : ''),
-                    monitoringData: eventData // Update stored monitoring data
+                if (!cytoscapeInstance.value) {
+                    console.warn("Cytoscape instance not ready for drawing graph. Attempting to initialize.");
+                    initializeCytoscapeInstance(); // Ensure it's initialized if onMounted didn't catch it
+                    if (!cytoscapeInstance.value) {
+                        console.error("Failed to initialize Cytoscape for drawing. Aborting draw.");
+                        return;
+                    }
+                }
+
+                console.log(`Drawing graph for ${selectedRequestId.value}`);
+                const instanceNodeStates = activeInstances[selectedRequestId.value].nodes || {};
+                const elementsForCy = dagCytoscapeJsData.value.map(el => {
+                    if (el.group === 'nodes') {
+                        const nodeEvent = instanceNodeStates[el.data.id];
+                        let status = 'PENDING';
+                        let monitoringData = {};
+                        if (nodeEvent) {
+                            status = nodeEvent.nodeStatus === null ? 'RUNNING' : nodeEvent.nodeStatus;
+                            monitoringData = nodeEvent;
+                        }
+                        return { ...el, data: { ...el.data, status: status, monitoringData: monitoringData } };
+                    }
+                    return el;
                 });
 
-                // If this node is currently selected for details, update details panel
-                if (selectedGraphNodeDetails.value && selectedGraphNodeDetails.value.id === eventData.instanceName) {
-                    selectedGraphNodeDetails.value = {
-                        ...selectedGraphNodeDetails.value, // keep old fields if not in eventData
-                        typeId: eventData.nodeTypeId || existingVisNode.typeId,
-                        statusText: style.text,
-                        statusColor: style.color,
-                        durationMillis: eventData.durationMillis,
-                        logicDurationMillis: eventData.logicDurationMillis,
-                        payloadSummary: eventData.payloadSummary,
-                        errorSummary: eventData.errorSummary
-                    };
+                cytoscapeInstance.value.elements().remove(); // Clear previous elements
+                cytoscapeInstance.value.add(elementsForCy);   // Add new ones
+
+                console.log("Running Dagre layout...");
+                const layout = cytoscapeInstance.value.layout({
+                    name: 'dagre', rankDir: 'LR', spacingFactor: 1.3, nodeSep: 70, edgeSep: 40, rankSep: 120,
+                    fit: true, padding: 30
+                });
+                try {
+                    layout.run();
+                    console.log("Dagre layout finished.");
+                } catch (e) {
+                    console.error("Error running Dagre layout:", e);
+                    // Fallback or error message
                 }
+                // cytoscapeInstance.value.fit(null, 30); // Fit after layout
+                // cytoscapeInstance.value.center();
+            }
+
+
+            function updateNodeVisualInGraph(eventData) {
+                if (!cytoscapeInstance.value || eventData.requestId !== selectedRequestId.value) return;
+
+                const cyNode = cytoscapeInstance.value.getElementById(eventData.instanceName);
+                if (cyNode.length > 0) {
+                    const effectiveStatus = eventData.nodeStatus === null ? 'RUNNING' : eventData.nodeStatus;
+                    cyNode.data('status', effectiveStatus);
+                    cyNode.data('monitoringData', eventData);
+
+                    if (selectedGraphNodeDetails.value && selectedGraphNodeDetails.value.id === eventData.instanceName) {
+                        const statusStyle = getNodeStatusStyle(effectiveStatus);
+                        selectedGraphNodeDetails.value = {
+                            ...selectedGraphNodeDetails.value, statusText: statusStyle.text, statusColor: statusStyle.color,
+                            durationMillis: eventData.durationMillis, logicDurationMillis: eventData.logicDurationMillis,
+                            payloadSummary: eventData.payloadSummary, errorSummary: eventData.errorSummary
+                        };
+                    }
+                } else { /* console.warn("Node not found in Cytoscape graph for update:", eventData.instanceName); */ }
             }
 
             function stopMonitoringCleanup() {
-                if (eventSource.value) {
-                    eventSource.value.close();
-                    eventSource.value = null;
-                }
-                // Do not clear activeInstances or selectedRequestId here, user might want to inspect them
-                // monitoringDagName.value = ''; // Keep it to show what was monitored
-                // dagDefinitionDot.value = '';
+                if (eventSource.value) { eventSource.value.close(); eventSource.value = null; }
                 isMonitoring.value = false;
-                // visNodes.clear();
-                // visEdges.clear();
-                // if (network.value) network.value.setData({ nodes: visNodes, edges: visEdges });
-                // selectedGraphNodeDetails.value = null;
-                console.log("Monitoring stopped.");
+                console.log("Monitoring SSE stream stopped.");
             }
 
             function stopMonitoring() {
                 stopMonitoringCleanup();
-                // Optionally, clear more states if desired when explicitly stopping
                 monitoringDagName.value = '';
-                dagNameInput.value = ''; // Clear input
-                dagDefinitionDot.value = '';
+                dagCytoscapeJsData.value = null;
                 Object.keys(activeInstances).forEach(key => delete activeInstances[key]);
                 selectedRequestId.value = null;
                 selectedGraphNodeDetails.value = null;
-                visNodes.clear();
-                visEdges.clear();
-                if (network.value) network.value.setData({ nodes: visNodes, edges: visEdges });
+                if (cytoscapeInstance.value) {
+                    cytoscapeInstance.value.destroy();
+                    cytoscapeInstance.value = null;
+                    console.log("Cytoscape instance destroyed.");
+                } else {
+                    console.log("No Cytoscape instance to destroy.");
+                }
+                // Re-initialize a clean cytoscape instance for the next monitoring session if graph container exists
+                nextTick(() => {
+                    if (graphContainerRef.value) { // If container still there
+                        initializeCytoscapeInstance();
+                    }
+                });
+                console.log("All monitoring states cleared.");
             }
-
 
             async function monitorDag() {
                 const currentDagNameToMonitor = dagNameInput.value.trim();
+                if (!currentDagNameToMonitor) { alert("请输入有效的 DAG Name。"); return; }
+                if (isMonitoring.value && monitoringDagName.value === currentDagNameToMonitor) return;
 
-                if (!dagNameInput.value.trim()) {
-                    alert("请输入有效的 DAG Name。");
-                    return;
-                }
-                stopMonitoring(); // Clear previous monitoring state completely before starting new
+                await stopMonitoring(); // Use await if stopMonitoring becomes async, otherwise it's fine
 
                 monitoringDagName.value = currentDagNameToMonitor;
-                isMonitoring.value = true; // Set monitoring flag
+                isMonitoring.value = true;
+
+                // Ensure Cytoscape is ready (it should be from onMounted or previous stopMonitoring)
+                if (!cytoscapeInstance.value && graphContainerRef.value) {
+                    initializeCytoscapeInstance();
+                }
+
 
                 const gotDefinition = await fetchDagDefinition(monitoringDagName.value);
                 if (!gotDefinition) {
-                    isMonitoring.value = false; // Reset flag if definition fetch failed
-                    return;
+                    isMonitoring.value = false; monitoringDagName.value = ''; return;
                 }
 
                 eventSource.value = new EventSource(`/dag-monitor/stream/${monitoringDagName.value}`);
-
-                eventSource.value.onopen = () => {
-                    console.log(`SSE connection established for DAG: ${monitoringDagName.value}`);
-                };
+                eventSource.value.onopen = () => console.log(`SSE connection established for DAG: ${monitoringDagName.value}`);
 
                 const handleEvent = (eventType, rawEventData) => {
                     const eventData = JSON.parse(rawEventData);
-                    console.log(`SSE Event [${eventType}] for ${eventData.dagName} (req: ${eventData.requestId}):`, eventData);
-
-                    if (eventData.dagName !== monitoringDagName.value) {
-                        console.warn(`Received event for ${eventData.dagName} while monitoring ${monitoringDagName.value}. Ignoring.`);
-                        return; // Should not happen with backend changes, but good check
-                    }
-
+                    if (eventData.dagName !== monitoringDagName.value) return;
                     const reqId = eventData.requestId;
-
                     if (!activeInstances[reqId]) {
-                        // Initialize instance if it's new
                         activeInstances[reqId] = reactive({
-                            requestId: reqId,
-                            dagName: eventData.dagName,
-                            status: 'PENDING', // Initial status before DAG_START or first NODE_UPDATE
-                            statusText: '等待启动...',
-                            startTime: null, // Will be set by DAG_START
-                            nodes: {}
+                            requestId: reqId, dagName: eventData.dagName, status: 'PENDING',
+                            statusText: '等待启动...', startTime: null, nodes: {}
                         });
                     }
                     const currentInstance = activeInstances[reqId];
 
                     switch (eventType) {
                         case 'DAG_START':
-                            currentInstance.status = 'RUNNING';
-                            currentInstance.statusText = '运行中';
-                            currentInstance.startTime = Date.now(); // Use client time for start if not in event
-                            currentInstance.dagName = eventData.dagName; // Confirm dagName
-                            // If no instance is selected, select this new one
-                            if (!selectedRequestId.value) {
-                                selectInstance(reqId);
-                            } else if (reqId === selectedRequestId.value) {
-                                // If it's already selected (e.g. historical event replayed), redraw
-                                nextTick(drawGraphForSelectedInstance);
+                            currentInstance.status = 'RUNNING'; currentInstance.statusText = '运行中';
+                            currentInstance.startTime = Date.now(); currentInstance.dagName = eventData.dagName;
+                            if (dagCytoscapeJsData.value) {
+                                dagCytoscapeJsData.value.forEach(el => {
+                                    if (el.group === 'nodes') {
+                                        currentInstance.nodes[el.data.id] = {
+                                            requestId: reqId, dagName: eventData.dagName, instanceName: el.data.id,
+                                            nodeTypeId: el.data.typeId, nodeStatus: 'PENDING', eventType: 'NODE_UPDATE'
+                                        };
+                                    }
+                                });
                             }
+                            if (!selectedRequestId.value) selectInstance(reqId);
+                            else if (reqId === selectedRequestId.value) nextTick(drawGraphForSelectedInstance);
                             break;
                         case 'NODE_UPDATE':
                             currentInstance.nodes[eventData.instanceName] = eventData;
-                            if (reqId === selectedRequestId.value) {
-                                updateNodeVisualInGraph(eventData);
-                            }
-                            // Update overall instance status if it's still PENDING/RUNNING
+                            if (reqId === selectedRequestId.value) updateNodeVisualInGraph(eventData);
                             if (currentInstance.status === 'PENDING' || currentInstance.status === 'RUNNING') {
-                                currentInstance.status = 'RUNNING'; // Mark as running if any node updates
-                                currentInstance.statusText = '运行中';
-                                if (!currentInstance.startTime && eventData.dagName === currentInstance.dagName) {
-                                    // Heuristic: if DAG_START was missed but nodes update, set a start time
-                                    // This is a fallback, DAG_START should ideally set it.
-                                    currentInstance.startTime = Date.now() - (eventData.durationMillis || 0);
-                                }
+                                currentInstance.status = 'RUNNING'; currentInstance.statusText = '运行中';
+                                if (!currentInstance.startTime) currentInstance.startTime = Date.now() - (eventData.durationMillis || 0);
                             }
                             break;
                         case 'DAG_COMPLETE':
@@ -436,108 +467,54 @@
                             currentInstance.statusText = eventData.dagSuccess ? '成功' : '失败';
                             currentInstance.durationMillis = eventData.durationMillis;
                             currentInstance.errorSummary = eventData.errorSummary;
-                            // No need to close eventSource here, it's per dagName
                             if (reqId === selectedRequestId.value) {
-                                // Refresh graph to show final states if any node was missed
+                                // Refresh graph to ensure all final states are shown, especially if some updates were missed
                                 nextTick(drawGraphForSelectedInstance);
                             }
                             break;
                         case 'SERIALIZATION_ERROR':
                             console.error("SSE Serialization Error:", eventData);
                             alert(`服务器数据序列化错误: ${eventData.error}`);
-                            // Potentially stop monitoring or show global error
                             break;
                     }
                 };
-
-                eventSource.value.addEventListener('DAG_START', e => handleEvent('DAG_START', e.data));
-                eventSource.value.addEventListener('NODE_UPDATE', e => handleEvent('NODE_UPDATE', e.data));
-                eventSource.value.addEventListener('DAG_COMPLETE', e => handleEvent('DAG_COMPLETE', e.data));
-                eventSource.value.addEventListener('SERIALIZATION_ERROR', e => handleEvent('SERIALIZATION_ERROR', e.data));
-
+                ['DAG_START', 'NODE_UPDATE', 'DAG_COMPLETE', 'SERIALIZATION_ERROR'].forEach(type =>
+                    eventSource.value.addEventListener(type, e => handleEvent(type, e.data))
+                );
                 eventSource.value.onerror = (error) => {
                     console.error("EventSource error:", error);
-                    alert(`与服务器的连接中断或发生错误 (DAG: ${monitoringDagName.value}). 请检查控制台和网络。`);
-                    stopMonitoringCleanup(); // Stop monitoring on persistent error
+                    if (isMonitoring.value) alert(`与服务器的连接中断 (DAG: ${monitoringDagName.value}).`);
+                    stopMonitoringCleanup();
                 };
             }
 
             function selectInstance(requestId) {
-                if (selectedRequestId.value === requestId) return; // No change
-
+                if (selectedRequestId.value === requestId && cytoscapeInstance.value && cytoscapeInstance.value.elements().length > 0) {
+                    if(cytoscapeInstance.value) { cytoscapeInstance.value.fit(null, 30); cytoscapeInstance.value.center(); }
+                    return;
+                }
                 selectedRequestId.value = requestId;
-                selectedGraphNodeDetails.value = null; // Clear node details from previous selection
-                // The watch on selectedRequestId will trigger graph redraw
+                selectedGraphNodeDetails.value = null;
             }
 
-            watch(selectedRequestId, (newVal, oldVal) => {
+            watch(selectedRequestId, (newVal) => {
                 if (newVal) {
                     console.log("Selected instance changed to:", newVal);
-                    nextTick(drawGraphForSelectedInstance);
+                    if (dagCytoscapeJsData.value) {
+                        if (!cytoscapeInstance.value && graphContainerRef.value) initializeCytoscapeInstance();
+                        nextTick(drawGraphForSelectedInstance);
+                    } else { /* console.log("DAG definition not yet loaded for selected instance."); */ }
                 } else {
-                    // Clear graph if no instance is selected
-                    visNodes.clear();
-                    visEdges.clear();
-                    if(network.value) network.value.setData({ nodes: visNodes, edges: visEdges });
-                }
-            });
-
-            onMounted(() => {
-                // Initialize network only once, it will be updated with setData
-                const container = document.getElementById('dag-graph');
-                if (container && !network.value) {
-                    network.value = new vis.Network(container, { nodes: visNodes, edges: visEdges }, graphOptions);
-                    network.value.on("click", params => {
-                        if (params.nodes.length > 0 && selectedRequestId.value) { // Ensure an instance is selected
-                            const nodeId = params.nodes[0];
-                            const visNodeData = visNodes.get(nodeId); // Get data from vis.DataSet
-                            // activeInstances[selectedRequestId.value].nodes should have the most up-to-date event data
-                            const nodeMonitoringData = activeInstances[selectedRequestId.value]?.nodes?.[nodeId] || visNodeData?.monitoringData;
-
-
-                            if (nodeMonitoringData) {
-                                const style = getNodeStyle(nodeMonitoringData.nodeStatus);
-                                selectedGraphNodeDetails.value = {
-                                    id: nodeId,
-                                    typeId: nodeMonitoringData.nodeTypeId || visNodeData?.typeId || 'N/A',
-                                    statusText: style.text,
-                                    statusColor: style.color,
-                                    durationMillis: nodeMonitoringData.durationMillis,
-                                    logicDurationMillis: nodeMonitoringData.logicDurationMillis,
-                                    payloadSummary: nodeMonitoringData.payloadSummary,
-                                    errorSummary: nodeMonitoringData.errorSummary
-                                };
-                            } else if (visNodeData) { // Fallback if no specific monitoring data (e.g. pure PENDING from DOT)
-                                const style = getNodeStyle('PENDING_INIT');
-                                selectedGraphNodeDetails.value = {
-                                    id: nodeId,
-                                    typeId: visNodeData.typeId || 'N/A',
-                                    statusText: style.text,
-                                    statusColor: style.color,
-                                };
-                            } else {
-                                selectedGraphNodeDetails.value = null;
-                            }
-                        } else {
-                            selectedGraphNodeDetails.value = null;
-                        }
-                    });
+                    if (cytoscapeInstance.value) cytoscapeInstance.value.elements().remove();
+                    selectedGraphNodeDetails.value = null;
                 }
             });
 
             return {
-                dagNameInput,
-                monitoringDagName,
-                isMonitoring,
-                monitorDag,
-                stopMonitoring,
-                activeInstances,
-                sortedInstances,
-                selectedRequestId,
-                selectInstance,
-                selectedGraphNodeDetails,
-                selectedInstanceStatusMessage,
-                selectedInstanceOverallStatusClass
+                dagNameInput, monitoringDagName, isMonitoring, monitorDag, stopMonitoring,
+                activeInstances, sortedInstances, selectedRequestId, selectInstance,
+                selectedGraphNodeDetails, selectedInstanceStatusMessage, selectedInstanceOverallStatusClass,
+                graphContainerRef // Expose ref for template
             };
         }
     }).mount('#app');
