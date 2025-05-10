@@ -33,7 +33,7 @@
         <java.version>8</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
-        <reactor.version>3.4.33</reactor.version>
+        <reactor.version>3.7.5</reactor.version>
         <reactor-adaptor.version>3.5.2</reactor-adaptor.version>
         <caffeine.version>2.9.3</caffeine.version>
         <lombok.version>1.18.30</lombok.version>

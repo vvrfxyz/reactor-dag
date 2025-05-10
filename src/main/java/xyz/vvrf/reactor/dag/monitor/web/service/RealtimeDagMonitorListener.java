@@ -26,6 +26,8 @@ public class RealtimeDagMonitorListener implements DagMonitorListener {
 
     // Key: dagName, Value: Sink for all events related to this DAG name
     private final Map<String, Sinks.Many<MonitoringEvent>> sinksByDagName = new ConcurrentHashMap<>();
+    // Key: dagName, Value: Lock object for synchronizing emissions to the sink of this DAG name
+    private final Map<String, Object> locksByDagName = new ConcurrentHashMap<>();
     // Key: requestId, Value: Map<instanceName, MonitoringEvent> for current node states of a specific DAG run
     private final Map<String, Map<String, MonitoringEvent>> currentDagInstanceStates = new ConcurrentHashMap<>();
     // Key: requestId, Value: DagDefinition (to map requestId back to dagName if needed and for node details)
@@ -40,9 +42,11 @@ public class RealtimeDagMonitorListener implements DagMonitorListener {
 
 
     public Flux<MonitoringEvent> getEventStream(String dagName) {
-        Sinks.Many<MonitoringEvent> sink = sinksByDagName.computeIfAbsent(dagName, key ->
-                Sinks.many().replay().<MonitoringEvent>limit(2000) // Replay a larger buffer for a DAG
-        );
+        Sinks.Many<MonitoringEvent> sink = sinksByDagName.computeIfAbsent(dagName, key -> {
+            // Ensure a lock object is also created for this new sink
+            locksByDagName.computeIfAbsent(key, k -> new Object());
+            return Sinks.many().replay().<MonitoringEvent>limit(2000);
+        });
 
         // Flux for historical data of active/recent instances of this DAG
         Flux<MonitoringEvent> historicalStatesFlux = Flux.defer(() -> {
@@ -84,26 +88,35 @@ public class RealtimeDagMonitorListener implements DagMonitorListener {
             return;
         }
 
-        // Emit to the specific dagName sink
-        Sinks.Many<MonitoringEvent> dagSink = sinksByDagName.get(event.getDagName());
-        if (dagSink != null) {
-            Sinks.EmitResult result = dagSink.tryEmitNext(event);
-            if (result.isFailure() && result != Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER) {
-                log.warn("Failed to emit monitoring event for dagName {}: {} (Event: {})", event.getDagName(), result, event);
-            }
-        } else {
-            // This can happen if an event arrives before any client subscribes to this dagName.
-            // The replay sink will handle this when a client eventually subscribes.
-            // We still need to store the state.
-            log.debug("No active sink for dagName {} when emitting event. Event will be replayed for new subscribers.", event.getDagName());
-            // Ensure sink is created if it wasn't (e.g. event comes before first getEventStream call for this dagName)
-            Sinks.Many<MonitoringEvent> newSink = sinksByDagName.computeIfAbsent(event.getDagName(), key ->
-                    Sinks.many().replay().<MonitoringEvent>limit(2000)
-            );
-            newSink.tryEmitNext(event); // Emit to the newly created/retrieved sink
+        String dagName = event.getDagName();
+
+        // Get or create the sink and its corresponding lock object
+        Sinks.Many<MonitoringEvent> dagSink = sinksByDagName.computeIfAbsent(dagName, key -> {
+            locksByDagName.computeIfAbsent(key, k -> new Object()); // Ensure lock is created with sink
+            log.debug("Creating new sink and lock for dagName: {}", key);
+            return Sinks.many().replay().<MonitoringEvent>limit(2000);
+        });
+
+        Object dagLock = locksByDagName.get(dagName);
+        // This should ideally not happen if computeIfAbsent for sink also ensures lock creation,
+        // but as a safeguard:
+        if (dagLock == null) {
+            dagLock = locksByDagName.computeIfAbsent(dagName, k -> {
+                log.warn("Lock for dagName {} was unexpectedly null during emitEvent, re-creating.", k);
+                return new Object();
+            });
         }
 
-        // Store/Update current state for the specific requestId
+        // Synchronize the emission to the sink
+        synchronized (dagLock) {
+            Sinks.EmitResult result = dagSink.tryEmitNext(event);
+            if (result.isFailure() && result != Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER) {
+                // FAIL_NON_SERIALIZED should not happen now with external synchronization
+                log.warn("Failed to emit monitoring event for dagName {}: {} (Event: {})", dagName, result, event);
+            }
+        }
+
+        // Store/Update current state for the specific requestId (ConcurrentHashMap is thread-safe for these ops)
         Map<String, MonitoringEvent> instanceEvents = currentDagInstanceStates.computeIfAbsent(event.getRequestId(), k -> new ConcurrentHashMap<>());
 
         if (event.getEventType() == MonitoringEvent.EventType.NODE_UPDATE && event.getInstanceName() != null) {
@@ -113,7 +126,6 @@ public class RealtimeDagMonitorListener implements DagMonitorListener {
         } else if (event.getEventType() == MonitoringEvent.EventType.DAG_COMPLETE) {
             instanceEvents.put(DAG_EVENT_COMPLETE_KEY, event);
         }
-        // No need for a generic "_DAG_EVENT_" + type key anymore with specific keys
     }
 
     private String summarizePayload(Object payload) {
@@ -186,6 +198,9 @@ public class RealtimeDagMonitorListener implements DagMonitorListener {
         Schedulers.boundedElastic().schedule(() -> {
             currentDagInstanceStates.remove(requestId);
             dagDefinitionsByRequestId.remove(requestId);
+            // Note: We are not removing sinks or locks from sinksByDagName/locksByDagName here
+            // as they are keyed by dagName and might be reused by other instances of the same DAG type.
+            // If dagNames are very dynamic and numerous, a separate cleanup strategy for sinks/locks might be needed.
             log.debug("Cleaned up monitoring resources for completed requestId: {}", requestId);
         }, CLEANUP_DELAY_MINUTES, TimeUnit.MINUTES);
     }
@@ -218,9 +233,6 @@ public class RealtimeDagMonitorListener implements DagMonitorListener {
 
     @Override
     public void onNodeStart(String requestId, String dagName, String instanceName, DagNode<?, ?> node) {
-        // For onNodeStart, status is effectively RUNNING.
-        // We use null for status in NODE_UPDATE to mean "RUNNING" or "actively being processed".
-        // The initial PENDING state is sent during onDagStart.
         updateNodeState(requestId, dagName, instanceName, null, Duration.ZERO, Duration.ZERO, null, null);
     }
 
@@ -242,8 +254,6 @@ public class RealtimeDagMonitorListener implements DagMonitorListener {
     @Override
     public void onNodeTimeout(String requestId, String dagName, String instanceName, Duration timeout, DagNode<?, ?> node) {
         log.warn("[Monitor] Node Timeout: {} in DAG {} (Request ID: {}) after {} ms", instanceName, dagName, requestId, timeout.toMillis());
-        // Typically, a timeout will lead to onNodeFailure. If not, and a specific TIMEOUT status is desired:
         // updateNodeState(requestId, dagName, instanceName, NodeResult.NodeStatus.TIMEOUT, timeout, timeout, null, new TimeoutException("Node timed out after " + timeout.toMillis() + "ms"));
-        // For now, relying on onNodeFailure to report the terminal state.
     }
 }
