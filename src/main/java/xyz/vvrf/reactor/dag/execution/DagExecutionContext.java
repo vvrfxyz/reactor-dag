@@ -7,6 +7,7 @@ import xyz.vvrf.reactor.dag.core.DagDefinition;
 import xyz.vvrf.reactor.dag.core.ErrorHandlingStrategy;
 import xyz.vvrf.reactor.dag.core.NodeResult;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -29,6 +30,7 @@ public class DagExecutionContext<C> {
     private final String requestId;
     private final DagDefinition<C> dagDefinition;
     private final C initialContext;
+    private final Instant dagStartTime;
 
     private final Map<String, Mono<NodeResult<C, ?>>> nodeExecutionMonos = new ConcurrentHashMap<>();
     private final Map<String, NodeResult<C, ?>> completedResults = new ConcurrentHashMap<>();
@@ -36,7 +38,6 @@ public class DagExecutionContext<C> {
     private final AtomicBoolean overallSuccess = new AtomicBoolean(true);
     private final AtomicInteger completedNodeCounter = new AtomicInteger(0);
 
-    // 从 DagDefinition 派生的便捷字段
     private final String dagName;
     private final ErrorHandlingStrategy errorStrategy;
     private final Set<String> allNodeNames;
@@ -46,6 +47,7 @@ public class DagExecutionContext<C> {
     public DagExecutionContext(C initialContext, DagDefinition<C> dagDefinition, String rawRequestId) {
         this.initialContext = initialContext;
         this.dagDefinition = dagDefinition;
+        this.dagStartTime = Instant.now();
 
         this.requestId = (rawRequestId != null && !rawRequestId.trim().isEmpty())
                 ? rawRequestId
