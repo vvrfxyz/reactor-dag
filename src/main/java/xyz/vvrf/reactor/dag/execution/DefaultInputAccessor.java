@@ -4,23 +4,23 @@ import lombok.extern.slf4j.Slf4j;
 import xyz.vvrf.reactor.dag.core.*;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
  * InputAccessor 的默认实现。
  * 基于激活的入边提供的上游结果构建。此类是不可变的。
+ * 支持扇入场景，一个输入槽可以从多个上游接收数据。
  *
  * @param <C> 上下文类型
- * @author Refactored (注释更新)
+ * @author Ruifeng.wen
  */
 @Slf4j
 public class DefaultInputAccessor<C> implements InputAccessor<C> {
 
-    // 存储每个 InputSlot 对应的激活且成功的上游结果
+    // 存储每个 InputSlot 对应的、来自所有激活且成功的上游节点的结果列表
     // Key: InputSlot<?> 实例 (来自节点定义)
-    // Value: NodeResult<C, ?> (来自上游成功执行的结果)
-    private final Map<InputSlot<?>, NodeResult<C, ?>> availablePayloads;
+    // Value: List<NodeResult<C, ?>> (来自上游成功执行的结果列表)
+    private final Map<InputSlot<?>, List<NodeResult<C, ?>>> activeSuccessfulUpstreamResultsPerSlot;
 
     // 存储每个 InputSlot 连接的所有入边的信息 (用于状态检查)
     // Key: InputSlot<?> 实例
@@ -51,10 +51,10 @@ public class DefaultInputAccessor<C> implements InputAccessor<C> {
     /**
      * 创建 DefaultInputAccessor 实例。
      *
-     * @param nodeInputSlots        当前节点声明的所有 InputSlot 集合 (不能为空)
-     * @param incomingEdges         连接到当前节点的所有 EdgeDefinition 列表 (不能为空)
-     * @param completedResults      图中所有已完成节点的结果 Map (InstanceName -> NodeResult) (不能为空)
-     * @param activeIncomingEdges   评估后确定为激活状态的入边列表 (不能为空)
+     * @param nodeInputSlots      当前节点声明的所有 InputSlot 集合 (不能为空)
+     * @param incomingEdges       连接到当前节点的所有 EdgeDefinition 列表 (不能为空)
+     * @param completedResults    图中所有已完成节点的结果 Map (InstanceName -> NodeResult) (不能为空)
+     * @param activeIncomingEdges 评估后确定为激活状态的入边列表 (不能为空)
      */
     public DefaultInputAccessor(
             Set<InputSlot<?>> nodeInputSlots,
@@ -67,25 +67,23 @@ public class DefaultInputAccessor<C> implements InputAccessor<C> {
         Objects.requireNonNull(completedResults, "已完成结果 Map 不能为空");
         Objects.requireNonNull(activeIncomingEdges, "激活的入边列表不能为空");
 
-        Map<InputSlot<?>, NodeResult<C, ?>> payloads = new ConcurrentHashMap<>();
-        Map<InputSlot<?>, List<EdgeInfo<C>>> edges = new HashMap<>();
+        // 本地可变 Map，用于在构造函数中构建数据
+        Map<InputSlot<?>, List<NodeResult<C, ?>>> successfulResultsMapLocal = new HashMap<>();
+        Map<InputSlot<?>, List<EdgeInfo<C>>> edgesMapLocal = new HashMap<>();
         Set<EdgeDefinition<C>> activeEdgeSet = new HashSet<>(activeIncomingEdges); // 用于快速查找激活状态
 
-        // 1. 构建 edgeInfoMap 和 availablePayloads
+        // 1. 构建 edgeInfoMap 和 successfulResultsMapLocal
         for (EdgeDefinition<C> edge : incomingEdges) {
             InputSlot<?> targetSlot = findInputSlotById(nodeInputSlots, edge.getInputSlotId());
             if (targetSlot == null) {
-                // 这通常不应该发生，因为 DagDefinitionBuilder 会验证
                 log.warn("在为 InputAccessor 构建时，找不到入边 {} 指向的输入槽 '{}'。忽略此边。", edge, edge.getInputSlotId());
                 continue;
             }
 
             NodeResult<C, ?> upstreamResult = completedResults.get(edge.getUpstreamInstanceName());
             if (upstreamResult == null) {
-                // 这也不应该发生，因为依赖应该已经完成
                 log.error("严重错误：在为 InputAccessor 构建时，找不到上游节点 '{}' 的结果。下游槽: {}",
                         edge.getUpstreamInstanceName(), targetSlot);
-                // 可以选择抛出异常或继续，这里选择记录错误并继续
                 continue;
             }
 
@@ -93,23 +91,27 @@ public class DefaultInputAccessor<C> implements InputAccessor<C> {
             EdgeInfo<C> info = new EdgeInfo<>(edge.getUpstreamInstanceName(), upstreamResult, isActive);
 
             // 添加到 edgeInfoMap
-            edges.computeIfAbsent(targetSlot, k -> new ArrayList<>()).add(info);
+            edgesMapLocal.computeIfAbsent(targetSlot, k -> new ArrayList<>()).add(info);
 
-            // 如果边是激活的且上游成功，尝试放入 availablePayloads
+            // 如果边是激活的且上游成功，添加到 successfulResultsMapLocal
             if (isActive && upstreamResult.isSuccess()) {
-                // 处理一个输入槽被多个激活边连接的情况
-                // 策略：后面的覆盖前面的（简单策略）。可以根据需要调整为其他策略，如抛异常或合并。
-                payloads.put(targetSlot, upstreamResult);
-                log.trace("为输入槽 '{}' 设置了来自上游 '{}' 的可用负载。", targetSlot.getId(), edge.getUpstreamInstanceName());
+                successfulResultsMapLocal.computeIfAbsent(targetSlot, k -> new ArrayList<>()).add(upstreamResult);
+                log.trace("为输入槽 '{}' 添加了来自上游 '{}' 的可用负载到列表。", targetSlot.getId(), edge.getUpstreamInstanceName());
             }
         }
 
-        // 转换为不可变 Map
-        this.availablePayloads = Collections.unmodifiableMap(payloads);
-        // 将 List 转换为不可变 List
-        Map<InputSlot<?>, List<EdgeInfo<C>>> immutableEdges = new HashMap<>();
-        edges.forEach((slot, infoList) -> immutableEdges.put(slot, Collections.unmodifiableList(infoList)));
-        this.edgeInfoMap = Collections.unmodifiableMap(immutableEdges);
+        // 转换为不可变 Map，内部 List 也转换为不可变
+        Map<InputSlot<?>, List<NodeResult<C, ?>>> finalSuccessfulResults = new HashMap<>();
+        successfulResultsMapLocal.forEach((slot, resultList) ->
+                finalSuccessfulResults.put(slot, Collections.unmodifiableList(new ArrayList<>(resultList)))
+        );
+        this.activeSuccessfulUpstreamResultsPerSlot = Collections.unmodifiableMap(finalSuccessfulResults);
+
+        Map<InputSlot<?>, List<EdgeInfo<C>>> finalEdgesMap = new HashMap<>();
+        edgesMapLocal.forEach((slot, infoList) ->
+                finalEdgesMap.put(slot, Collections.unmodifiableList(new ArrayList<>(infoList)))
+        );
+        this.edgeInfoMap = Collections.unmodifiableMap(finalEdgesMap);
     }
 
     // 辅助方法：根据 ID 查找 InputSlot
@@ -119,30 +121,53 @@ public class DefaultInputAccessor<C> implements InputAccessor<C> {
                 return slot;
             }
         }
-        return null; // 或者抛出异常，但理论上 Builder 已验证
+        return null;
     }
 
 
     @Override
     @SuppressWarnings("unchecked")
     public <T> Optional<T> getPayload(InputSlot<T> inputSlot) {
-        NodeResult<C, ?> result = availablePayloads.get(inputSlot);
-        if (result != null) { // availablePayloads 只存储成功的
-            // 从 NodeResult 中获取 Optional<Payload>
-            return result.getPayload()
-                    // 验证类型（理论上 Builder 已保证，但作为防御性措施）
-                    .filter(p -> inputSlot.getType().isInstance(p))
-                    .map(p -> (T) p); // 类型转换是安全的
+        List<NodeResult<C, ?>> results = activeSuccessfulUpstreamResultsPerSlot.get(inputSlot);
+        if (results != null && !results.isEmpty()) {
+            for (NodeResult<C, ?> result : results) {
+                // result is already guaranteed to be from a successful and active upstream
+                Optional<T> payload = result.getPayload()
+                        .filter(inputSlot.getType()::isInstance)
+                        .map(p -> (T) p);
+                if (payload.isPresent()) {
+                    return payload; // Return the first valid payload found
+                }
+            }
         }
         return Optional.empty();
     }
 
     @Override
+    public <T> List<Optional<T>> getAllPayloads(InputSlot<T> inputSlot) {
+        List<NodeResult<C, ?>> results = activeSuccessfulUpstreamResultsPerSlot.get(inputSlot);
+        if (results == null || results.isEmpty()) {
+            return Collections.emptyList();
+        }
+        // Type casting for p -> (T) p is safe due to filter(inputSlot.getType()::isInstance)
+        return results.stream()
+                .map(result -> result.getPayload()
+                        .filter(inputSlot.getType()::isInstance)
+                        .map(p -> (T) p))
+                .collect(Collectors.toList());
+    }
+
+    @Override
     public boolean isAvailable(InputSlot<?> inputSlot) {
-        // 检查 availablePayloads 中是否有对应槽，并且其 Payload 存在
-        // 注意：availablePayloads 只包含来自激活、成功上游的数据
-        NodeResult<C, ?> result = availablePayloads.get(inputSlot);
-        return result != null && result.getPayload().isPresent();
+        List<NodeResult<C, ?>> results = activeSuccessfulUpstreamResultsPerSlot.get(inputSlot);
+        if (results != null && !results.isEmpty()) {
+            // Check if any result in the list has a payload that matches the slot's type
+            return results.stream()
+                    .anyMatch(result -> result.getPayload()
+                            .filter(inputSlot.getType()::isInstance)
+                            .isPresent());
+        }
+        return false;
     }
 
     @Override
@@ -177,10 +202,14 @@ public class DefaultInputAccessor<C> implements InputAccessor<C> {
 
     @Override
     public boolean isInactive(InputSlot<?> inputSlot) {
-        // 如果不在 availablePayloads 中（即没有激活且成功的上游提供数据），
+        // 如果 activeSuccessfulUpstreamResultsPerSlot 中没有该槽的条目，
+        // 或者条目对应的列表为空（即没有激活且成功的上游提供数据），
         // 并且 edgeInfoMap 中存在该槽（即至少有一条边定义连接到它），
-        // 则认为它是非激活的（或上游未成功）。
-        return !availablePayloads.containsKey(inputSlot) && edgeInfoMap.containsKey(inputSlot);
+        // 则认为它是非激活的（或上游未成功，或条件不满足等）。
+        List<NodeResult<C, ?>> successfulResults = activeSuccessfulUpstreamResultsPerSlot.get(inputSlot);
+        boolean hasAnySuccessfulActiveInput = successfulResults != null && !successfulResults.isEmpty();
+
+        return edgeInfoMap.containsKey(inputSlot) && !hasAnySuccessfulActiveInput;
     }
 
     @Override
