@@ -5,18 +5,14 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import xyz.vvrf.reactor.dag.core.*;
 import xyz.vvrf.reactor.dag.registry.NodeRegistry;
-import xyz.vvrf.reactor.dag.execution.DefaultLocalInputAccessor;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
- * DagEngine 的标准实现。
+ * DagEngine 的标准实现 (已重构)。
  * 负责根据 DAG 定义编排节点执行，处理依赖关系、条件边和错误策略。
- * 使用 computeIfAbsent 和 Mono.cache() 确保每个节点的执行逻辑最多只被调用一次。
+ * 每个 execute 调用创建一个 DagExecutionContext 来管理其状态。
  *
  * @param <C> 上下文类型
  * @author ruifeng.wen
@@ -26,7 +22,7 @@ public class StandardDagEngine<C> implements DagEngine<C> {
 
     private final NodeRegistry<C> nodeRegistry;
     private final NodeExecutor<C> nodeExecutor;
-    private final int concurrencyLevel; // 保留，当前未使用
+    private final int concurrencyLevel; // 保留，当前未使用，但可用于未来配置
 
     public StandardDagEngine(NodeRegistry<C> nodeRegistry, NodeExecutor<C> nodeExecutor, int concurrencyLevel) {
         this.nodeRegistry = Objects.requireNonNull(nodeRegistry, "NodeRegistry cannot be null");
@@ -34,7 +30,7 @@ public class StandardDagEngine<C> implements DagEngine<C> {
         if (concurrencyLevel <= 0) {
             throw new IllegalArgumentException("Concurrency level must be positive.");
         }
-        this.concurrencyLevel = concurrencyLevel;
+        this.concurrencyLevel = concurrencyLevel; // 未来可用于配置引擎内部的并发操作
         log.info("StandardDagEngine for context '{}' initialized. Executor: {}, Concurrency Level (config): {}",
                 nodeRegistry.getContextType().getSimpleName(),
                 nodeExecutor.getClass().getSimpleName(),
@@ -43,368 +39,293 @@ public class StandardDagEngine<C> implements DagEngine<C> {
 
     @Override
     public Flux<Event<?>> execute(C initialContext, DagDefinition<C> dagDefinition, String requestId) {
-        final String actualRequestId = (requestId != null && !requestId.trim().isEmpty())
-                ? requestId
-                : "dag-req-" + UUID.randomUUID().toString().substring(0, 8);
-        final String dagName = dagDefinition.getDagName();
-        final ErrorHandlingStrategy errorStrategy = dagDefinition.getErrorHandlingStrategy();
-        final Set<String> allNodeNames = dagDefinition.getAllNodeInstanceNames();
-        final int totalNodes = allNodeNames.size();
-        final String contextTypeName = dagDefinition.getContextType().getSimpleName();
+        // 1. 创建 DagExecutionContext 来管理此执行的状态
+        final DagExecutionContext<C> executionContext = new DagExecutionContext<>(initialContext, dagDefinition, requestId);
 
-        log.info("[RequestId: {}][DAG: '{}'][Context: {}] Starting execution (Strategy: {}, Nodes: {})",
-                actualRequestId, dagName, contextTypeName, errorStrategy, totalNodes);
+        final String actualRequestId = executionContext.getRequestId(); // 从 executionContext 获取
+        final String dagName = executionContext.getDagName();
+        final int totalNodes = executionContext.getTotalNodes();
 
         if (totalNodes == 0) {
             log.info("[RequestId: {}][DAG: '{}'] DAG is empty, returning empty Flux.", actualRequestId, dagName);
             return Flux.empty();
         }
 
-        final Map<String, Mono<NodeResult<C, ?>>> nodeExecutionMonos = new ConcurrentHashMap<>();
-        final Map<String, NodeResult<C, ?>> completedResults = new ConcurrentHashMap<>();
-        final AtomicBoolean failFastTriggered = new AtomicBoolean(false);
-        final AtomicBoolean overallSuccess = new AtomicBoolean(true);
-        final AtomicInteger completedNodeCounter = new AtomicInteger(0);
-
         return Flux.defer(() -> {
             log.debug("[RequestId: {}][DAG: '{}'] Initializing execution flows for all {} nodes.", actualRequestId, dagName, totalNodes);
-            List<Mono<Void>> executionFlows = allNodeNames.stream()
-                    .map(nodeName -> getNodeMono( // 递归获取或创建每个节点的 Mono
-                            nodeName, initialContext, dagDefinition, nodeExecutionMonos, completedResults,
-                            failFastTriggered, overallSuccess, completedNodeCounter, totalNodes,
-                            actualRequestId, dagName)
-                            .then() // 我们只需要完成信号，结果通过 completedResults 共享
+            List<Mono<Void>> executionFlows = executionContext.getAllNodeNames().stream()
+                    .map(nodeName -> getNodeMono(nodeName, executionContext) // 传递 executionContext
+                            .then() // 我们只需要完成信号，结果通过 executionContext.completedResults 共享
                     )
                     .collect(Collectors.toList());
 
-            // Mono.when 等待所有节点的 Mono 完成（无论成功、失败还是跳过）
             return Mono.when(executionFlows)
                     .doOnSubscribe(s -> log.debug("[RequestId: {}][DAG: '{}'] Mono.when subscribed, waiting for all node flows to complete.", actualRequestId, dagName))
-                    .thenMany(Flux.defer(() -> { // 所有节点流程结束后执行
+                    .thenMany(Flux.defer(() -> {
                         log.debug("[RequestId: {}][DAG: '{}'] All node flows completed. Extracting events from successful results.", actualRequestId, dagName);
-                        return Flux.fromIterable(completedResults.values())
+                        return Flux.fromIterable(executionContext.getCompletedResults().values())
                                 .filter(NodeResult::isSuccess)
                                 .flatMap(NodeResult::getEvents);
                     }))
-                    .doOnComplete(() -> logCompletion(actualRequestId, dagName, contextTypeName, errorStrategy, failFastTriggered.get(), overallSuccess.get(), completedNodeCounter.get(), totalNodes))
+                    .doOnComplete(() -> logCompletion(executionContext))
                     .doOnError(e -> {
                         log.error("[RequestId: {}][DAG: '{}'] Execution failed with unexpected error in main stream: {}", actualRequestId, dagName, e.getMessage(), e);
-                        overallSuccess.set(false);
-                        logCompletion(actualRequestId, dagName, contextTypeName, errorStrategy, failFastTriggered.get(), overallSuccess.get(), completedNodeCounter.get(), totalNodes);
+                        executionContext.setOverallFailure(); // 标记总体失败
+                        logCompletion(executionContext);
                     })
                     .doFinally(signal -> {
                         log.debug("[RequestId: {}][DAG: '{}'] Execution finished (Signal: {}). Cleaning up execution mono cache.", actualRequestId, dagName, signal);
-                        nodeExecutionMonos.clear(); // 清理 Mono 缓存
-                        // completedResults 保留用于调试或后续分析
+                        executionContext.clearExecutionMonoCache(); // 清理当前执行上下文的 Mono 缓存
                     });
         });
     }
 
     /**
      * 获取或创建指定节点实例的执行 Mono。
-     * 使用 computeIfAbsent 确保为每个节点实例只创建一个 Mono。
+     * 使用 DagExecutionContext.getOrCreateNodeMono 确保为每个节点实例只创建一个 Mono。
      * 使用 Mono.cache() 确保该 Mono 的实际执行逻辑（包括依赖等待和节点执行）只运行一次。
-     * 后续对此 Mono 的订阅将收到缓存的结果。
      */
     private Mono<NodeResult<C, ?>> getNodeMono(
             String instanceName,
-            C context,
-            DagDefinition<C> dagDefinition,
-            Map<String, Mono<NodeResult<C, ?>>> nodeExecutionMonos,
-            Map<String, NodeResult<C, ?>> completedResults,
-            AtomicBoolean failFastTriggered,
-            AtomicBoolean overallSuccess,
-            AtomicInteger completedNodeCounter,
-            int totalNodes,
-            String requestId,
-            String dagName) {
+            DagExecutionContext<C> executionContext) { // 接收 DagExecutionContext
 
-        // computeIfAbsent: 原子性地获取或创建 Mono。lambda 只会为每个 instanceName 执行一次。
-        return nodeExecutionMonos.computeIfAbsent(instanceName, key -> {
-            log.debug("[RequestId: {}][DAG: '{}'] Creating execution Mono for node '{}' (this happens only once per node).", requestId, dagName, instanceName);
-            // Mono.defer: 延迟执行，直到有订阅发生。
-            return Mono.defer(() -> {
-                        // 这个日志会在每次下游节点需要此节点结果时（即订阅发生时）打印，即使结果是从缓存返回的。
-                        log.trace("[RequestId: {}][DAG: '{}'] Subscription received for node '{}'. Evaluating dependencies and execution status.", requestId, dagName, instanceName);
+        // 使用 executionContext 的方法来获取或创建 Mono
+        return executionContext.getOrCreateNodeMono(instanceName, () ->
+                // Mono.defer: 延迟执行，直到有订阅发生。
+                Mono.defer(() -> {
+                            log.trace("[RequestId: {}][DAG: '{}'] Subscription received for node '{}'. Evaluating dependencies and execution status.",
+                                    executionContext.getRequestId(), executionContext.getDagName(), instanceName);
 
-                        // --- 1. 检查是否可以提前终止 (FAIL_FAST) ---
-                        if (dagDefinition.getErrorHandlingStrategy() == ErrorHandlingStrategy.FAIL_FAST && failFastTriggered.get()) {
-                            log.debug("[RequestId: {}][DAG: '{}'] FAIL_FAST active, skipping node '{}' (cached check).", requestId, dagName, instanceName);
-                            return createSkippedResultMono(dagDefinition, instanceName, completedResults, completedNodeCounter, overallSuccess, requestId, dagName);
-                        }
+                            // --- 1. 检查是否可以提前终止 (FAIL_FAST) ---
+                            if (executionContext.getErrorStrategy() == ErrorHandlingStrategy.FAIL_FAST && executionContext.isFailFastActive()) {
+                                log.debug("[RequestId: {}][DAG: '{}'] FAIL_FAST active, skipping node '{}' (cached check).",
+                                        executionContext.getRequestId(), executionContext.getDagName(), instanceName);
+                                return createSkippedResultMono(instanceName, executionContext);
+                            }
 
-                        // --- 2. 处理依赖 ---
-                        List<EdgeDefinition<C>> incomingEdges = dagDefinition.getIncomingEdges(instanceName);
-                        List<Mono<NodeResult<C, ?>>> dependencyMonos;
+                            // --- 2. 处理依赖 ---
+                            List<EdgeDefinition<C>> incomingEdges = executionContext.getDagDefinition().getIncomingEdges(instanceName);
+                            List<Mono<NodeResult<C, ?>>> dependencyMonos;
 
-                        if (incomingEdges.isEmpty()) {
-                            dependencyMonos = Collections.emptyList();
-                            log.trace("[RequestId: {}][DAG: '{}'] Node '{}' has no dependencies.", requestId, dagName, instanceName);
-                        } else {
-                            dependencyMonos = incomingEdges.stream()
-                                    .map(EdgeDefinition::getUpstreamInstanceName)
-                                    .distinct()
-                                    .map(upstreamName -> {
-                                        log.trace("[RequestId: {}][DAG: '{}'] Node '{}' depends on '{}'. Getting/creating dependency Mono.", requestId, dagName, instanceName, upstreamName);
-                                        // 递归调用，获取上游节点的 Mono (可能是新建的，也可能是从缓存获取的)
-                                        return getNodeMono(
-                                                upstreamName, context, dagDefinition, nodeExecutionMonos, completedResults,
-                                                failFastTriggered, overallSuccess, completedNodeCounter, totalNodes,
-                                                requestId, dagName);
-                                    })
-                                    .collect(Collectors.toList());
-                        }
+                            if (incomingEdges.isEmpty()) {
+                                dependencyMonos = Collections.emptyList();
+                                log.trace("[RequestId: {}][DAG: '{}'] Node '{}' has no dependencies.",
+                                        executionContext.getRequestId(), executionContext.getDagName(), instanceName);
+                            } else {
+                                dependencyMonos = incomingEdges.stream()
+                                        .map(EdgeDefinition::getUpstreamInstanceName)
+                                        .distinct()
+                                        .map(upstreamName -> {
+                                            log.trace("[RequestId: {}][DAG: '{}'] Node '{}' depends on '{}'. Getting/creating dependency Mono.",
+                                                    executionContext.getRequestId(), executionContext.getDagName(), instanceName, upstreamName);
+                                            // 递归调用，传递相同的 executionContext
+                                            return getNodeMono(upstreamName, executionContext);
+                                        })
+                                        .collect(Collectors.toList());
+                            }
 
-                        // --- 3. 等待依赖并执行 ---
-                        // Mono.when: 等待所有依赖 Mono 完成。订阅这些依赖 Mono 时，如果它们已被缓存，将直接获得结果。
-                        return Mono.when(dependencyMonos)
-                                .doOnSubscribe(s -> log.trace("[RequestId: {}][DAG: '{}'] Subscribed to dependencies for node '{}'. Waiting...", requestId, dagName, instanceName))
-                                .then(Mono.defer(() -> { // 所有依赖完成后执行
-                                    log.trace("[RequestId: {}][DAG: '{}'] Dependencies for node '{}' met. Proceeding to evaluate conditions and execute.", requestId, dagName, instanceName);
+                            // --- 3. 等待依赖并执行 ---
+                            return Mono.when(dependencyMonos)
+                                    .doOnSubscribe(s -> log.trace("[RequestId: {}][DAG: '{}'] Subscribed to dependencies for node '{}'. Waiting...",
+                                            executionContext.getRequestId(), executionContext.getDagName(), instanceName))
+                                    .then(Mono.defer(() -> {
+                                        log.trace("[RequestId: {}][DAG: '{}'] Dependencies for node '{}' met. Proceeding to evaluate conditions and execute.",
+                                                executionContext.getRequestId(), executionContext.getDagName(), instanceName);
 
-                                    // 再次检查 FAIL_FAST (可能在等待依赖期间被触发)
-                                    if (dagDefinition.getErrorHandlingStrategy() == ErrorHandlingStrategy.FAIL_FAST && failFastTriggered.get()) {
-                                        log.debug("[RequestId: {}][DAG: '{}'] FAIL_FAST active after dependencies resolved, skipping node '{}'.", requestId, dagName, instanceName);
-                                        return createSkippedResultMono(dagDefinition, instanceName, completedResults, completedNodeCounter, overallSuccess, requestId, dagName);
-                                    }
+                                        if (executionContext.getErrorStrategy() == ErrorHandlingStrategy.FAIL_FAST && executionContext.isFailFastActive()) {
+                                            log.debug("[RequestId: {}][DAG: '{}'] FAIL_FAST active after dependencies resolved, skipping node '{}'.",
+                                                    executionContext.getRequestId(), executionContext.getDagName(), instanceName);
+                                            return createSkippedResultMono(instanceName, executionContext);
+                                        }
 
-                                    // --- 4. 评估条件并准备输入 ---
-                                    List<EdgeDefinition<C>> activeEdges = new ArrayList<>();
-                                    boolean canExecute = false;
-                                    NodeDefinition nodeDef = dagDefinition.getNodeDefinition(instanceName)
-                                            .orElseThrow(() -> new IllegalStateException("Node definition disappeared for: " + instanceName));
+                                        // --- 4. 评估条件并准备输入 ---
+                                        List<EdgeDefinition<C>> activeEdges = new ArrayList<>();
+                                        boolean canExecute = false;
+                                        NodeDefinition nodeDef = executionContext.getDagDefinition().getNodeDefinition(instanceName)
+                                                .orElseThrow(() -> new IllegalStateException("Node definition disappeared for: " + instanceName));
 
-                                    if (incomingEdges.isEmpty()) {
-                                        canExecute = true;
-                                        log.trace("[RequestId: {}][DAG: '{}'] Node '{}' is a source node, can execute.", requestId, dagName, instanceName);
-                                    } else {
-                                        boolean upstreamErrorInFailFast = false;
-                                        // boolean upstreamSkipped = false; // Not directly used to prevent execution, but for logging
+                                        if (incomingEdges.isEmpty()) {
+                                            canExecute = true;
+                                            log.trace("[RequestId: {}][DAG: '{}'] Node '{}' is a source node, can execute.",
+                                                    executionContext.getRequestId(), executionContext.getDagName(), instanceName);
+                                        } else {
+                                            boolean upstreamErrorInFailFast = false;
+                                            for (EdgeDefinition<C> edge : incomingEdges) {
+                                                String upstreamName = edge.getUpstreamInstanceName();
+                                                NodeResult<C, ?> upstreamResult = executionContext.getCompletedResults().get(upstreamName);
 
-                                        for (EdgeDefinition<C> edge : incomingEdges) {
-                                            String upstreamName = edge.getUpstreamInstanceName();
-                                            // 从 completedResults 获取已完成的上游结果 (Mono.when 保证了它们此时已完成)
-                                            NodeResult<C, ?> upstreamResult = completedResults.get(upstreamName);
+                                                if (upstreamResult == null) {
+                                                    String errorMsg = String.format("Consistency error: Upstream node '%s' result not found for edge to '%s', though dependencies should be met.", upstreamName, instanceName);
+                                                    log.error("[RequestId: {}][DAG: '{}'] {}", executionContext.getRequestId(), executionContext.getDagName(), errorMsg);
+                                                    handleFailure(instanceName, new IllegalStateException(errorMsg), executionContext);
+                                                    return Mono.just(executionContext.getCompletedResults().get(instanceName));
+                                                }
 
-                                            if (upstreamResult == null) {
-                                                String errorMsg = String.format("Consistency error: Upstream node '%s' result not found for edge to '%s', though dependencies should be met.", upstreamName, instanceName);
-                                                log.error("[RequestId: {}][DAG: '{}'] {}", requestId, dagName, errorMsg);
-                                                handleFailure(instanceName, new IllegalStateException(errorMsg), dagDefinition, completedResults, failFastTriggered, overallSuccess, completedNodeCounter, requestId, dagName);
-                                                // 返回包含失败结果的 Mono，以便下游知道
-                                                return Mono.just(completedResults.get(instanceName));
-                                            }
+                                                log.trace("[RequestId: {}][DAG: '{}'] Checking edge {} -> {}. Upstream status: {}",
+                                                        executionContext.getRequestId(), executionContext.getDagName(), upstreamName, instanceName, upstreamResult.getStatus());
 
-                                            log.trace("[RequestId: {}][DAG: '{}'] Checking edge {} -> {}. Upstream status: {}", requestId, dagName, upstreamName, instanceName, upstreamResult.getStatus());
+                                                if (upstreamResult.isSuccess()) {
+                                                    boolean conditionMet = false;
+                                                    ConditionBase<C> condition = edge.getCondition();
+                                                    String conditionTypeName = condition.getClass().getSimpleName();
 
-                                            if (upstreamResult.isSuccess()) {
-                                                boolean conditionMet = false;
-                                                ConditionBase<C> condition = edge.getCondition();
-                                                String conditionTypeName = condition.getClass().getSimpleName(); // 用于日志
+                                                    try {
+                                                        if (condition instanceof DirectUpstreamCondition) {
+                                                            @SuppressWarnings({"rawtypes", "unchecked"})
+                                                            DirectUpstreamCondition rawDirectCond = (DirectUpstreamCondition) condition;
+                                                            conditionMet = rawDirectCond.evaluate(executionContext.getInitialContext(), upstreamResult);
+                                                            log.trace("[RequestId: {}][DAG: '{}'] Evaluated DirectUpstreamCondition for edge {} -> {}: {}", executionContext.getRequestId(), executionContext.getDagName(), upstreamName, instanceName, conditionMet);
+                                                        } else if (condition instanceof LocalInputCondition) {
+                                                            LocalInputCondition<C> localCond = (LocalInputCondition<C>) condition;
+                                                            LocalInputAccessor<C> localAccessor = new xyz.vvrf.reactor.dag.execution.DefaultLocalInputAccessor<>(executionContext.getCompletedResults(), executionContext.getDagDefinition(), instanceName);
+                                                            conditionMet = localCond.evaluate(executionContext.getInitialContext(), localAccessor);
+                                                            log.trace("[RequestId: {}][DAG: '{}'] Evaluated LocalInputCondition for edge {} -> {}: {}", executionContext.getRequestId(), executionContext.getDagName(), upstreamName, instanceName, conditionMet);
+                                                        } else if (condition instanceof DeclaredDependencyCondition) {
+                                                            DeclaredDependencyCondition<C> declaredCond = (DeclaredDependencyCondition<C>) condition;
+                                                            Set<String> explicitDeps = declaredCond.getRequiredNodeDependencies();
+                                                            Set<String> allowedNodes = new HashSet<>(explicitDeps);
+                                                            allowedNodes.add(upstreamName);
+                                                            ConditionInputAccessor<C> restrictedAccessor = new RestrictedConditionInputAccessor<>(executionContext.getCompletedResults(), allowedNodes, upstreamName);
+                                                            conditionMet = declaredCond.evaluate(executionContext.getInitialContext(), restrictedAccessor);
+                                                            log.trace("[RequestId: {}][DAG: '{}'] Evaluated DeclaredDependencyCondition for edge {} -> {} (Allowed: {}): {}", executionContext.getRequestId(), executionContext.getDagName(), upstreamName, instanceName, allowedNodes, conditionMet);
+                                                        } else {
+                                                            log.error("[RequestId: {}][DAG: '{}'] Unknown condition type '{}' for edge {} -> {}. Treating as false.", executionContext.getRequestId(), executionContext.getDagName(), condition.getClass().getName(), upstreamName, instanceName);
+                                                            conditionMet = false;
+                                                        }
+                                                    } catch (IllegalArgumentException accessError) {
+                                                        log.error("[RequestId: {}][DAG: '{}'] Condition ({}) evaluation for edge {} -> {} failed due to restricted access: {}. Treating as node failure.", executionContext.getRequestId(), executionContext.getDagName(), conditionTypeName, upstreamName, instanceName, accessError.getMessage());
+                                                        handleFailure(instanceName, accessError, executionContext);
+                                                        return Mono.just(executionContext.getCompletedResults().get(instanceName));
+                                                    } catch (Exception e) {
+                                                        log.error("[RequestId: {}][DAG: '{}'] Condition ({}) evaluation failed unexpectedly for edge {} -> {}. Treating as node failure.", executionContext.getRequestId(), executionContext.getDagName(), conditionTypeName, upstreamName, instanceName, e);
+                                                        handleFailure(instanceName, e, executionContext);
+                                                        return Mono.just(executionContext.getCompletedResults().get(instanceName));
+                                                    }
 
-                                                try {
-                                                    // 根据条件类型进行评估
-                                                    if (condition instanceof DirectUpstreamCondition) {
-                                                        @SuppressWarnings({"rawtypes", "unchecked"}) // 必须抑制原始类型和可能的未检查调用警告
-                                                        DirectUpstreamCondition rawDirectCond = (DirectUpstreamCondition) condition;
-                                                        conditionMet = rawDirectCond.evaluate(context, upstreamResult);
-                                                        log.trace("[RequestId: {}][DAG: '{}'] Evaluated DirectUpstreamCondition for edge {} -> {}: {}", requestId, dagName, upstreamName, instanceName, conditionMet);
-
-                                                    } else if (condition instanceof LocalInputCondition) {
-                                                        LocalInputCondition<C> localCond = (LocalInputCondition<C>) condition;
-                                                        // 创建 LocalInputAccessor
-                                                        LocalInputAccessor<C> localAccessor = new DefaultLocalInputAccessor<>(completedResults, dagDefinition, instanceName);
-                                                        conditionMet = localCond.evaluate(context, localAccessor);
-                                                        log.trace("[RequestId: {}][DAG: '{}'] Evaluated LocalInputCondition for edge {} -> {}: {}", requestId, dagName, upstreamName, instanceName, conditionMet);
-
-                                                    } else if (condition instanceof DeclaredDependencyCondition) {
-                                                        DeclaredDependencyCondition<C> declaredCond = (DeclaredDependencyCondition<C>) condition;
-                                                        Set<String> explicitDeps = declaredCond.getRequiredNodeDependencies();
-                                                        Set<String> allowedNodes = new HashSet<>(explicitDeps);
-                                                        allowedNodes.add(upstreamName); // 添加直接上游
-
-                                                        // 创建受限的全局 Accessor
-                                                        ConditionInputAccessor<C> restrictedAccessor = new RestrictedConditionInputAccessor<>(
-                                                                completedResults, allowedNodes, upstreamName);
-                                                        conditionMet = declaredCond.evaluate(context, restrictedAccessor);
-                                                        log.trace("[RequestId: {}][DAG: '{}'] Evaluated DeclaredDependencyCondition for edge {} -> {} (Allowed: {}): {}",
-                                                                requestId, dagName, upstreamName, instanceName, allowedNodes, conditionMet);
+                                                    if (conditionMet) {
+                                                        activeEdges.add(edge);
+                                                        canExecute = true;
+                                                    }
+                                                } else if (upstreamResult.isFailure()) {
+                                                    if (executionContext.getErrorStrategy() == ErrorHandlingStrategy.FAIL_FAST) {
+                                                        upstreamErrorInFailFast = true;
+                                                        log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' failed in FAIL_FAST mode. Node '{}' will be skipped.", executionContext.getRequestId(), executionContext.getDagName(), upstreamName, instanceName);
+                                                        break;
                                                     } else {
-                                                        // 未知条件类型，视为失败
-                                                        log.error("[RequestId: {}][DAG: '{}'] Unknown condition type '{}' for edge {} -> {}. Treating as false.",
-                                                                requestId, dagName, condition.getClass().getName(), upstreamName, instanceName);
-                                                        conditionMet = false;
+                                                        log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' failed in CONTINUE_ON_FAILURE mode. Node '{}' might still execute if other inputs are available.", executionContext.getRequestId(), executionContext.getDagName(), upstreamName, instanceName);
                                                     }
-
-                                                } catch (IllegalArgumentException accessError) {
-                                                    // 捕获 RestrictedConditionInputAccessor 的访问错误
-                                                    log.error("[RequestId: {}][DAG: '{}'] Condition ({}) evaluation for edge {} -> {} failed due to restricted access: {}. Treating as node failure.",
-                                                            requestId, dagName, conditionTypeName, upstreamName, instanceName, accessError.getMessage());
-                                                    handleFailure(instanceName, accessError, dagDefinition, completedResults, failFastTriggered, overallSuccess, completedNodeCounter, requestId, dagName);
-                                                    return Mono.just(completedResults.get(instanceName));
-                                                } catch (Exception e) {
-                                                    // 捕获条件评估本身的其他异常
-                                                    log.error("[RequestId: {}][DAG: '{}'] Condition ({}) evaluation failed unexpectedly for edge {} -> {}. Treating as node failure.",
-                                                            requestId, dagName, conditionTypeName, upstreamName, instanceName, e);
-                                                    handleFailure(instanceName, e, dagDefinition, completedResults, failFastTriggered, overallSuccess, completedNodeCounter, requestId, dagName);
-                                                    return Mono.just(completedResults.get(instanceName));
+                                                } else if (upstreamResult.isSkipped()) {
+                                                    log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' was skipped. Node '{}' might be skipped if all inputs are skipped or conditions not met.", executionContext.getRequestId(), executionContext.getDagName(), upstreamName, instanceName);
                                                 }
-
-                                                if (conditionMet) {
-                                                    activeEdges.add(edge);
-                                                    canExecute = true; // 至少有一条激活路径
-                                                }
-                                            } else if (upstreamResult.isFailure()) {
-                                                if (dagDefinition.getErrorHandlingStrategy() == ErrorHandlingStrategy.FAIL_FAST) {
-                                                    upstreamErrorInFailFast = true;
-                                                    log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' failed in FAIL_FAST mode. Node '{}' will be skipped.", requestId, dagName, upstreamName, instanceName);
-                                                    break; // 停止检查此节点的其他入边
-                                                } else {
-                                                    log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' failed in CONTINUE_ON_FAILURE mode. Node '{}' might still execute if other inputs are available.", requestId, dagName, upstreamName, instanceName);
-                                                }
-                                            } else if (upstreamResult.isSkipped()) {
-                                                // upstreamSkipped = true; // Not directly used to prevent execution
-                                                log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' was skipped. Node '{}' might be skipped if all inputs are skipped or conditions not met.", requestId, dagName, upstreamName, instanceName);
                                             }
-                                        } // end for each edge
-
-                                        if (upstreamErrorInFailFast) {
-                                            canExecute = false; // 如果在FAIL_FAST模式下任何上游失败，则不能执行
-                                        }
-                                    }
-
-                                    // --- 5. 执行或跳过 ---
-                                    Mono<NodeResult<C, ?>> executionOrSkipMono;
-                                    if (canExecute) {
-                                        log.debug("[RequestId: {}][DAG: '{}'] Conditions met for node '{}'. Preparing to execute via NodeExecutor. Active Edges: {}",
-                                                requestId, dagName, instanceName, activeEdges.stream().map(e -> e.getUpstreamInstanceName() + "->" + e.getDownstreamInstanceName()).collect(Collectors.joining(", ")));
-
-                                        InputAccessor<C> inputAccessor;
-                                        try {
-                                            NodeRegistry.NodeMetadata meta = nodeRegistry.getNodeMetadata(nodeDef.getNodeTypeId())
-                                                    .orElseThrow(() -> new IllegalStateException("Metadata not found for " + nodeDef.getNodeTypeId() + " in registry " + nodeRegistry.getClass().getSimpleName()));
-                                            Set<InputSlot<?>> declaredInputSlots = meta.getInputSlots();
-                                            inputAccessor = new DefaultInputAccessor<>(declaredInputSlots, incomingEdges, completedResults, activeEdges);
-                                        } catch (Exception e) {
-                                            log.error("[RequestId: {}][DAG: '{}'] Failed to create InputAccessor for node '{}'. Treating as node failure.",
-                                                    requestId, dagName, instanceName, e);
-                                            handleFailure(instanceName, e, dagDefinition, completedResults, failFastTriggered, overallSuccess, completedNodeCounter, requestId, dagName);
-                                            return Mono.just(completedResults.get(instanceName));
+                                            if (upstreamErrorInFailFast) {
+                                                canExecute = false;
+                                            }
                                         }
 
-                                        // 调用 NodeExecutor 执行节点，返回代表执行结果的 Mono
-                                        executionOrSkipMono = nodeExecutor.executeNode(nodeDef, context, inputAccessor, requestId);
+                                        // --- 5. 执行或跳过 ---
+                                        Mono<NodeResult<C, ?>> executionOrSkipMono;
+                                        if (canExecute) {
+                                            log.debug("[RequestId: {}][DAG: '{}'] Conditions met for node '{}'. Preparing to execute via NodeExecutor. Active Edges: {}",
+                                                    executionContext.getRequestId(), executionContext.getDagName(), instanceName, activeEdges.stream().map(e -> e.getUpstreamInstanceName() + "->" + e.getDownstreamInstanceName()).collect(Collectors.joining(", ")));
 
-                                    } else {
-                                        log.debug("[RequestId: {}][DAG: '{}'] Conditions not met or critical dependencies failed/skipped. Skipping node '{}'.",
-                                                requestId, dagName, instanceName);
-                                        executionOrSkipMono = createSkippedResultMono(dagDefinition, instanceName, completedResults, completedNodeCounter, overallSuccess, requestId, dagName);
-                                    }
+                                            InputAccessor<C> inputAccessor;
+                                            try {
+                                                NodeRegistry.NodeMetadata meta = nodeRegistry.getNodeMetadata(nodeDef.getNodeTypeId())
+                                                        .orElseThrow(() -> new IllegalStateException("Metadata not found for " + nodeDef.getNodeTypeId() + " in registry " + nodeRegistry.getClass().getSimpleName()));
+                                                Set<InputSlot<?>> declaredInputSlots = meta.getInputSlots();
+                                                inputAccessor = new DefaultInputAccessor<>(declaredInputSlots, incomingEdges, executionContext.getCompletedResults(), activeEdges);
+                                            } catch (Exception e) {
+                                                log.error("[RequestId: {}][DAG: '{}'] Failed to create InputAccessor for node '{}'. Treating as node failure.",
+                                                        executionContext.getRequestId(), executionContext.getDagName(), instanceName, e);
+                                                handleFailure(instanceName, e, executionContext);
+                                                return Mono.just(executionContext.getCompletedResults().get(instanceName));
+                                            }
+                                            // 调用 NodeExecutor, 传递 requestId 从 executionContext
+                                            executionOrSkipMono = nodeExecutor.executeNode(nodeDef, executionContext.getInitialContext(), inputAccessor, executionContext.getRequestId());
+                                        } else {
+                                            log.debug("[RequestId: {}][DAG: '{}'] Conditions not met or critical dependencies failed/skipped. Skipping node '{}'.",
+                                                    executionContext.getRequestId(), executionContext.getDagName(), instanceName);
+                                            executionOrSkipMono = createSkippedResultMono(instanceName, executionContext);
+                                        }
 
-                                    // --- 6. 处理结果/错误，并准备缓存 ---
-                                    return executionOrSkipMono
-                                            .doOnNext(result -> {
-                                                if (completedResults.putIfAbsent(instanceName, result) == null) {
-                                                    int count = completedNodeCounter.incrementAndGet();
-                                                    log.debug("[RequestId: {}][DAG: '{}'] Node '{}' completed with status: {}. Recorded result. Progress: {}/{}",
-                                                            requestId, dagName, instanceName, result.getStatus(), count, totalNodes);
-                                                    if (result.isFailure()) {
-                                                        handleFailureInternal(instanceName, result.getError().orElse(new RuntimeException("Unknown failure")),
-                                                                dagDefinition, failFastTriggered, overallSuccess, requestId, dagName);
+                                        // --- 6. 处理结果/错误 ---
+                                        return executionOrSkipMono
+                                                .doOnNext(result -> {
+                                                    // 使用 executionContext.recordCompletedResult
+                                                    if (executionContext.recordCompletedResult(instanceName, result)) {
+                                                        if (result.isFailure()) {
+                                                            handleFailureInternal(instanceName, result.getError().orElse(new RuntimeException("Unknown failure")), executionContext);
+                                                        }
                                                     }
-                                                } else {
-                                                    log.warn("[RequestId: {}][DAG: '{}'] Node '{}' result ALREADY recorded, but doOnNext triggered again? Status: {}. This might indicate an issue.",
-                                                            requestId, dagName, instanceName, result.getStatus());
-                                                }
-                                            })
-                                            .doOnError(error -> {
-                                                log.error("[RequestId: {}][DAG: '{}'] Unexpected error during execution/skip processing for node '{}'. Recording failure.",
-                                                        requestId, dagName, instanceName, error);
-                                                handleFailure(instanceName, error, dagDefinition, completedResults, failFastTriggered, overallSuccess, completedNodeCounter, requestId, dagName);
-                                            });
-                                })); // end Mono.when.then
-                    }) // end Mono.defer
-                    .cache();
-        }); // end computeIfAbsent
+                                                    // 日志已在 recordCompletedResult 中处理
+                                                })
+                                                .doOnError(error -> {
+                                                    log.error("[RequestId: {}][DAG: '{}'] Unexpected error during execution/skip processing for node '{}'. Recording failure.",
+                                                            executionContext.getRequestId(), executionContext.getDagName(), instanceName, error);
+                                                    handleFailure(instanceName, error, executionContext); // 传递 executionContext
+                                                });
+                                    })); // end Mono.when.then
+                        }) // end Mono.defer
+                        .cache() // 仍然缓存 Mono 的结果
+        ); // end executionContext.getOrCreateNodeMono
     }
 
 
-    /**
-     * 创建一个代表节点被跳过的 Mono<NodeResult>，并更新状态。
-     */
-    private Mono<NodeResult<C, ?>> createSkippedResultMono(DagDefinition<C> dagDefinition, String instanceName,
-                                                           Map<String, NodeResult<C, ?>> completedResults,
-                                                           AtomicInteger completedNodeCounter, AtomicBoolean overallSuccess,
-                                                           String requestId, String dagName) {
+    private Mono<NodeResult<C, ?>> createSkippedResultMono(String instanceName, DagExecutionContext<C> context) {
         NodeResult<C, ?> skippedResult = NodeResult.skipped();
-        if (completedResults.putIfAbsent(instanceName, skippedResult) == null) {
-            int count = completedNodeCounter.incrementAndGet();
-            log.debug("[RequestId: {}][DAG: '{}'] Node '{}' recorded as SKIPPED. Progress: {}/{}",
-                    requestId, dagName, instanceName, count, dagDefinition.getAllNodeInstanceNames().size());
-        } else {
-            log.warn("[RequestId: {}][DAG: '{}'] Node '{}' result ALREADY recorded when trying to mark as SKIPPED. This might indicate an issue.",
-                    requestId, dagName, instanceName);
-        }
+        // 使用 context.recordCompletedResult 来记录并获取日志
+        context.recordCompletedResult(instanceName, skippedResult);
+        // overallSuccess 不在此处修改，跳过不代表整体失败
         return Mono.just(skippedResult);
     }
 
-    /**
-     * 处理节点执行失败（外部调用点，确保结果被记录）。
-     */
-    private void handleFailure(String instanceName, Throwable error, DagDefinition<C> dagDefinition,
-                               Map<String, NodeResult<C, ?>> completedResults,
-                               AtomicBoolean failFastTriggered, AtomicBoolean overallSuccess,
-                               AtomicInteger completedNodeCounter,
-                               String requestId, String dagName) {
+    private void handleFailure(String instanceName, Throwable error, DagExecutionContext<C> context) {
         NodeResult<C, ?> failureResult = NodeResult.failure(error);
-        if (completedResults.putIfAbsent(instanceName, failureResult) == null) {
-            int count = completedNodeCounter.incrementAndGet();
-            log.warn("[RequestId: {}][DAG: '{}'] Node '{}' recorded as FAILURE. Progress: {}/{}. Error: {}",
-                    requestId, dagName, instanceName, count, dagDefinition.getAllNodeInstanceNames().size(), error.getMessage());
-            handleFailureInternal(instanceName, error, dagDefinition, failFastTriggered, overallSuccess, requestId, dagName);
+        // 使用 context.recordCompletedResult 来记录
+        if (context.recordCompletedResult(instanceName, failureResult)) {
+            // 如果是新记录的失败，则调用 internal 处理
+            handleFailureInternal(instanceName, error, context);
         } else {
-            log.warn("[RequestId: {}][DAG: '{}'] Node '{}' result ALREADY recorded when trying to mark as FAILURE. Error: {}. This might indicate an issue.",
-                    requestId, dagName, instanceName, error.getMessage());
+            // 如果已记录，仅记录警告 (已在 recordCompletedResult 中处理)
+            log.warn("[RequestId: {}][DAG: '{}'] Node '{}' result ALREADY recorded when trying to mark as FAILURE. Error: {}.",
+                    context.getRequestId(), context.getDagName(), instanceName, error.getMessage());
         }
     }
 
-    /**
-     * 处理节点执行失败的核心逻辑（设置状态，可能触发 FAIL_FAST）。
-     */
-    private void handleFailureInternal(String instanceName, Throwable error, DagDefinition<C> dagDefinition,
-                                       AtomicBoolean failFastTriggered, AtomicBoolean overallSuccess,
-                                       String requestId, String dagName) {
-        overallSuccess.set(false);
-        if (dagDefinition.getErrorHandlingStrategy() == ErrorHandlingStrategy.FAIL_FAST) {
-            if (failFastTriggered.compareAndSet(false, true)) {
-                log.warn("[RequestId: {}][DAG: '{}'] Node '{}' failed. Activating FAIL_FAST strategy. Error: {}",
-                        requestId, dagName, instanceName, error.getMessage());
+    private void handleFailureInternal(String instanceName, Throwable error, DagExecutionContext<C> context) {
+        context.setOverallFailure(); // 标记整体失败
+        if (context.getErrorStrategy() == ErrorHandlingStrategy.FAIL_FAST) {
+            // 使用 context.triggerFailFast()
+            if (context.triggerFailFast()) {
+                // 日志已在 triggerFailFast 中处理
+                log.debug("[RequestId: {}][DAG: '{}'] Node '{}' failed. FAIL_FAST strategy activated. Error: {}",
+                        context.getRequestId(), context.getDagName(), instanceName, error.getMessage());
             } else {
                 log.debug("[RequestId: {}][DAG: '{}'] Node '{}' failed, but FAIL_FAST was already active. Error: {}",
-                        requestId, dagName, instanceName, error.getMessage());
+                        context.getRequestId(), context.getDagName(), instanceName, error.getMessage());
             }
         } else { // CONTINUE_ON_FAILURE
-            log.debug("[RequestId: {}][DAG: '{}'] Node '{}' failed (CONTINUE_ON_FAILURE strategy). Execution continues.",
-                    requestId, dagName, instanceName);
+            log.debug("[RequestId: {}][DAG: '{}'] Node '{}' failed (CONTINUE_ON_FAILURE strategy). Execution continues. Error: {}",
+                    context.getRequestId(), context.getDagName(), instanceName, error.getMessage());
         }
     }
 
-    /**
-     * 记录 DAG 执行完成时的最终状态。
-     */
-    private void logCompletion(String requestId, String dagName, String contextTypeName, ErrorHandlingStrategy strategy,
-                               boolean failFastTriggered, boolean overallSuccess, int completedCount, int totalNodes) {
+    private void logCompletion(DagExecutionContext<C> context) {
         String finalStatus;
-        if (strategy == ErrorHandlingStrategy.FAIL_FAST) {
-            finalStatus = failFastTriggered ? "FAILED (FAIL_FAST)" : (overallSuccess ? "SUCCESS" : "FAILED");
+        if (context.getErrorStrategy() == ErrorHandlingStrategy.FAIL_FAST) {
+            finalStatus = context.isFailFastActive() ? "FAILED (FAIL_FAST)" : (context.isOverallSuccess() ? "SUCCESS" : "FAILED");
         } else { // CONTINUE_ON_FAILURE
-            finalStatus = overallSuccess ? "SUCCESS" : "COMPLETED_WITH_FAILURES";
+            finalStatus = context.isOverallSuccess() ? "SUCCESS" : "COMPLETED_WITH_FAILURES";
         }
-        boolean allAccountedFor = (completedCount == totalNodes);
+        boolean allAccountedFor = (context.getCompletedNodeCount() == context.getTotalNodes());
         log.info("[RequestId: {}][DAG: '{}'][Context: {}] Execution finished. Final Status: {}. Completed nodes accounted for: {}/{}. All nodes processed: {}",
-                requestId, dagName, contextTypeName, finalStatus, completedCount, totalNodes, allAccountedFor);
+                context.getRequestId(), context.getDagName(), context.getContextTypeName(),
+                finalStatus, context.getCompletedNodeCount(), context.getTotalNodes(), allAccountedFor);
+
         if (!allAccountedFor) {
             log.warn("[RequestId: {}][DAG: '{}'] Potential issue: Not all nodes ({}) were accounted for upon completion ({}). This might indicate an issue in the execution logic or graph structure.",
-                    requestId, dagName, totalNodes, completedCount);
+                    context.getRequestId(), context.getDagName(), context.getTotalNodes(), context.getCompletedNodeCount());
         }
     }
 }
