@@ -1,4 +1,3 @@
-// 文件名: spring/boot/DagEngineProvider.java (已修正)
 package xyz.vvrf.reactor.dag.spring.boot;
 
 import lombok.extern.slf4j.Slf4j;
@@ -11,9 +10,8 @@ import org.springframework.core.ResolvableType;
 import org.springframework.lang.NonNull;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.retry.Retry;
 import xyz.vvrf.reactor.dag.execution.DagEngine;
-// NodeExecutor import is fine for the helper method's generic type T
-import xyz.vvrf.reactor.dag.execution.NodeExecutor;
 import xyz.vvrf.reactor.dag.execution.StandardDagEngine;
 import xyz.vvrf.reactor.dag.execution.StandardNodeExecutor;
 import xyz.vvrf.reactor.dag.monitor.DagMonitorListener;
@@ -31,7 +29,7 @@ import java.util.stream.Collectors;
  * 负责根据上下文类型查找相应的 {@link NodeRegistry<C>} Bean，
  * 并按需创建和缓存 {@link DagEngine<C>} 实例。
  * 它现在内部创建 {@link StandardNodeExecutor}，使用自动配置的
- * 默认组件 (Scheduler, Listeners, Properties)，通过名称查找这些默认组件。
+ * 默认组件 (Scheduler, Listeners, Properties, DefaultRetry)，通过名称查找这些默认组件。
  *
  * @author Refactored
  */
@@ -41,21 +39,27 @@ public class DagEngineProvider implements ApplicationContextAware {
     // 自动配置中定义的 Bean 名称
     private static final String DEFAULT_SCHEDULER_BEAN_NAME = "dagNodeExecutionScheduler";
     private static final String DEFAULT_LISTENERS_BEAN_NAME = "dagMonitorListeners";
+    // 框架默认重试Bean名称 (如果通过Bean提供) - 当前直接从AutoConfig注入
+    // private static final String FRAMEWORK_DEFAULT_RETRY_BEAN_NAME = "dagFrameworkDefaultRetrySpec";
 
 
     private ApplicationContext applicationContext;
     private final DagFrameworkProperties properties;
+    private final Retry frameworkDefaultRetrySpec;
 
     // 缓存已创建的 DagEngine 实例 <ContextType, DagEngine>
     private final Map<Class<?>, DagEngine<?>> engineCache = new ConcurrentHashMap<>();
 
     /**
      * 由 Spring 调用的构造函数。
-     * @param properties 注入的框架配置属性 (非空)。
+     *
+     * @param properties                注入的框架配置属性 (非空)。
+     * @param frameworkDefaultRetrySpec 注入的框架默认重试策略 (非空, 可以是 Retry.max(0))。
      */
-    public DagEngineProvider(DagFrameworkProperties properties) {
+    public DagEngineProvider(DagFrameworkProperties properties, Retry frameworkDefaultRetrySpec) {
         this.properties = Objects.requireNonNull(properties, "DagFrameworkProperties 不能为空");
-        log.info("DagEngineProvider 已初始化，配置: {}", properties);
+        this.frameworkDefaultRetrySpec = Objects.requireNonNull(frameworkDefaultRetrySpec, "框架默认重试策略不能为空");
+        log.info("DagEngineProvider 已初始化，配置: {}, 框架默认重试: {}", properties, this.frameworkDefaultRetrySpec.getClass().getSimpleName());
     }
 
     @Override
@@ -73,10 +77,10 @@ public class DagEngineProvider implements ApplicationContextAware {
      * @param contextType 需要的 DAG 上下文类型 Class 对象 (非空)。
      * @param <C>         上下文类型。
      * @return 上下文类型的 DagEngine<C> 实例。
-     * @throws NoSuchBeanDefinitionException 如果找不到所需的 NodeRegistry<C> Bean，
-     *                                       或者按名称查找时找不到默认的调度器/监听器 Bean。
+     * @throws NoSuchBeanDefinitionException   如果找不到所需的 NodeRegistry<C> Bean，
+     *                                         或者按名称查找时找不到默认的调度器/监听器 Bean。
      * @throws NoUniqueBeanDefinitionException 如果找到多个 NodeRegistry<C> Bean。
-     * @throws IllegalStateException 如果 ApplicationContext 尚未设置。
+     * @throws IllegalStateException           如果 ApplicationContext 尚未设置。
      */
     @SuppressWarnings("unchecked") // 类型转换是安全的，因为基于 Class<C> 查找和创建
     public <C> DagEngine<C> getEngine(Class<C> contextType) {
@@ -102,7 +106,6 @@ public class DagEngineProvider implements ApplicationContextAware {
         // 4. 按名称查找默认的 Scheduler Bean (StandardNodeExecutor 需要)
         Scheduler scheduler;
         try {
-            // 直接按名称和类型获取 Bean
             scheduler = applicationContext.getBean(DEFAULT_SCHEDULER_BEAN_NAME, Scheduler.class);
             log.debug("找到了名为 '{}' 的默认 Scheduler Bean: {}", DEFAULT_SCHEDULER_BEAN_NAME, scheduler.getClass().getName());
         } catch (NoSuchBeanDefinitionException e) {
@@ -113,11 +116,8 @@ public class DagEngineProvider implements ApplicationContextAware {
         // 5. 按名称查找 DagMonitorListener Bean 列表 (StandardNodeExecutor 需要)
         List<DagMonitorListener> listeners;
         try {
-            // 按名称获取 Bean，然后进行类型转换
-            // 注意：getBean 返回 Object，需要强制转换。List<?> 然后再转 List<DagMonitorListener>
             Object listenersBean = applicationContext.getBean(DEFAULT_LISTENERS_BEAN_NAME);
             if (listenersBean instanceof List) {
-                // 进行类型安全的转换
                 listeners = ((List<?>) listenersBean).stream()
                         .filter(DagMonitorListener.class::isInstance)
                         .map(DagMonitorListener.class::cast)
@@ -137,27 +137,29 @@ public class DagEngineProvider implements ApplicationContextAware {
         log.debug("为上下文 '{}' 创建内部 StandardNodeExecutor...", contextType.getSimpleName());
         StandardNodeExecutor<C> executor = new StandardNodeExecutor<>(
                 registry,
-                properties.getNode().getDefaultTimeout(), // 使用属性中的全局默认超时
-                scheduler, // 使用按名称找到的 scheduler
-                listeners  // 使用按名称找到的 listeners
+                properties.getNode().getDefaultTimeout(),
+                scheduler,
+                listeners,
+                this.frameworkDefaultRetrySpec
         );
 
         // 7. 创建 StandardDagEngine 实例
         log.debug("为上下文 '{}' 创建 StandardDagEngine...", contextType.getSimpleName());
         StandardDagEngine<C> newEngine = new StandardDagEngine<>(
                 registry,
-                executor, // 使用内部创建的执行器
-                properties.getEngine().getConcurrencyLevel() // 使用属性中的并发级别
+                executor,
+                properties.getEngine().getConcurrencyLevel(),
+                listeners // StandardDagEngine 也接收监听器列表
         );
 
         // 8. 放入缓存 (使用 computeIfAbsent 保证线程安全)
         DagEngine<?> existingEngine = engineCache.putIfAbsent(contextType, newEngine);
         if (existingEngine != null) {
             log.warn("上下文 '{}' 的 DagEngine 被并发创建。返回已存在的实例。", contextType.getSimpleName());
-            return (DagEngine<C>) existingEngine; // 返回另一个线程创建的实例
+            return (DagEngine<C>) existingEngine;
         } else {
             log.info("已成功创建并缓存上下文类型 '{}' 的 DagEngine 实例。", contextType.getSimpleName());
-            return newEngine; // 返回新创建的实例
+            return newEngine;
         }
     }
 
@@ -175,18 +177,26 @@ public class DagEngineProvider implements ApplicationContextAware {
                 log.trace("为类型 {}<{}> 找到了唯一的 Bean: {}", baseType.getSimpleName(), contextType.getSimpleName(), uniqueBean.getClass().getName());
                 return uniqueBean;
             } else {
-                throw new NoSuchBeanDefinitionException(requiredType,
-                        String.format("在 Spring 上下文中找不到类型为 %s<%s> 的 Bean 定义。",
-                                baseType.getSimpleName(), contextType.getSimpleName()));
+                // ObjectProvider.getIfUnique() 返回 null 如果没有找到或找到多个。我们需要区分这两种情况。
+                // Spring 5.3+ getIfAvailable() + getIfUnique() or check beans by names
+                String[] beanNames = applicationContext.getBeanNamesForType(requiredType);
+                if (beanNames.length == 0) {
+                    throw new NoSuchBeanDefinitionException(requiredType,
+                            String.format("在 Spring 上下文中找不到类型为 %s<%s> 的 Bean 定义。",
+                                    baseType.getSimpleName(), contextType.getSimpleName()));
+                } else if (beanNames.length > 1) {
+                    throw new NoUniqueBeanDefinitionException(requiredType, beanNames);
+                }
+                // Should not happen if beanNames.length == 1 and uniqueBean was null, but as a fallback:
+                return applicationContext.getBean(beanNames[0], baseType); // This might not respect generics fully
             }
         } catch (NoUniqueBeanDefinitionException e) {
-            String beanNames = String.join(", ", applicationContext.getBeanNamesForType(requiredType));
+            String beanNamesStr = String.join(", ", applicationContext.getBeanNamesForType(requiredType));
             log.error("为类型 {}<{}> 找到了多个 Bean 定义: [{}]. 期望只有一个。",
-                    baseType.getSimpleName(), contextType.getSimpleName(), beanNames);
-            // 重新抛出异常，包含更多上下文信息
+                    baseType.getSimpleName(), contextType.getSimpleName(), beanNamesStr);
             throw new NoUniqueBeanDefinitionException(requiredType, String.valueOf(e.getNumberOfBeansFound()),
                     String.format("期望 %s<%s> 只有一个 Bean，但找到了 %d 个: [%s]",
-                            baseType.getSimpleName(), contextType.getSimpleName(), e.getNumberOfBeansFound(), beanNames));
+                            baseType.getSimpleName(), contextType.getSimpleName(), e.getNumberOfBeansFound(), beanNamesStr));
         }
     }
 
