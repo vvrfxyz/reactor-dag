@@ -1,12 +1,11 @@
-// file: execution/StandardDagEngine.java
 package xyz.vvrf.reactor.dag.execution;
 
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.SignalType;
 import xyz.vvrf.reactor.dag.core.*;
 import xyz.vvrf.reactor.dag.registry.NodeRegistry;
+import xyz.vvrf.reactor.dag.execution.DefaultLocalInputAccessor;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -20,6 +19,7 @@ import java.util.stream.Collectors;
  * 使用 computeIfAbsent 和 Mono.cache() 确保每个节点的执行逻辑最多只被调用一次。
  *
  * @param <C> 上下文类型
+ * @author ruifeng.wen
  */
 @Slf4j
 public class StandardDagEngine<C> implements DagEngine<C> {
@@ -179,7 +179,7 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                         log.trace("[RequestId: {}][DAG: '{}'] Node '{}' is a source node, can execute.", requestId, dagName, instanceName);
                                     } else {
                                         boolean upstreamErrorInFailFast = false;
-                                        boolean upstreamSkipped = false;
+                                        // boolean upstreamSkipped = false; // Not directly used to prevent execution, but for logging
 
                                         for (EdgeDefinition<C> edge : incomingEdges) {
                                             String upstreamName = edge.getUpstreamInstanceName();
@@ -211,8 +211,8 @@ public class StandardDagEngine<C> implements DagEngine<C> {
 
                                                     } else if (condition instanceof LocalInputCondition) {
                                                         LocalInputCondition<C> localCond = (LocalInputCondition<C>) condition;
-                                                        // 创建 LocalInputAccessor (需要传入 dagDefinition 和下游节点名 instanceName)
-                                                        LocalInputAccessor<C> localAccessor = new xyz.vvrf.reactor.dag.execution.DefaultLocalInputAccessor<>(completedResults, dagDefinition, instanceName);
+                                                        // 创建 LocalInputAccessor
+                                                        LocalInputAccessor<C> localAccessor = new DefaultLocalInputAccessor<>(completedResults, dagDefinition, instanceName);
                                                         conditionMet = localCond.evaluate(context, localAccessor);
                                                         log.trace("[RequestId: {}][DAG: '{}'] Evaluated LocalInputCondition for edge {} -> {}: {}", requestId, dagName, upstreamName, instanceName, conditionMet);
 
@@ -222,7 +222,7 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                                         Set<String> allowedNodes = new HashSet<>(explicitDeps);
                                                         allowedNodes.add(upstreamName); // 添加直接上游
 
-                                                        // 创建受限的全局 Accessor (复用之前的 Restricted 实现)
+                                                        // 创建受限的全局 Accessor
                                                         ConditionInputAccessor<C> restrictedAccessor = new RestrictedConditionInputAccessor<>(
                                                                 completedResults, allowedNodes, upstreamName);
                                                         conditionMet = declaredCond.evaluate(context, restrictedAccessor);
@@ -233,7 +233,6 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                                         log.error("[RequestId: {}][DAG: '{}'] Unknown condition type '{}' for edge {} -> {}. Treating as false.",
                                                                 requestId, dagName, condition.getClass().getName(), upstreamName, instanceName);
                                                         conditionMet = false;
-                                                        // 或者抛出异常？当前选择视为 false
                                                     }
 
                                                 } catch (IllegalArgumentException accessError) {
@@ -258,20 +257,19 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                                 if (dagDefinition.getErrorHandlingStrategy() == ErrorHandlingStrategy.FAIL_FAST) {
                                                     upstreamErrorInFailFast = true;
                                                     log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' failed in FAIL_FAST mode. Node '{}' will be skipped.", requestId, dagName, upstreamName, instanceName);
-                                                    break;
+                                                    break; // 停止检查此节点的其他入边
                                                 } else {
                                                     log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' failed in CONTINUE_ON_FAILURE mode. Node '{}' might still execute if other inputs are available.", requestId, dagName, upstreamName, instanceName);
                                                 }
                                             } else if (upstreamResult.isSkipped()) {
-                                                upstreamSkipped = true;
-                                                log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' was skipped. Node '{}' might be skipped.", requestId, dagName, upstreamName, instanceName);
+                                                // upstreamSkipped = true; // Not directly used to prevent execution
+                                                log.debug("[RequestId: {}][DAG: '{}'] Upstream node '{}' was skipped. Node '{}' might be skipped if all inputs are skipped or conditions not met.", requestId, dagName, upstreamName, instanceName);
                                             }
                                         } // end for each edge
 
                                         if (upstreamErrorInFailFast) {
-                                            canExecute = false;
+                                            canExecute = false; // 如果在FAIL_FAST模式下任何上游失败，则不能执行
                                         }
-                                        // TODO: 考虑更复杂的跳过逻辑，例如如果所有必需输入都被跳过？
                                     }
 
                                     // --- 5. 执行或跳过 ---
@@ -303,11 +301,8 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                     }
 
                                     // --- 6. 处理结果/错误，并准备缓存 ---
-                                    // doOnNext/doOnError 在 Mono 成功/失败时执行副作用（记录结果）
-                                    // 这些副作用只会在 Mono 第一次执行时发生，因为后续将由 cache() 处理。
                                     return executionOrSkipMono
                                             .doOnNext(result -> {
-                                                // 结果产生时，原子性地记录到 completedResults
                                                 if (completedResults.putIfAbsent(instanceName, result) == null) {
                                                     int count = completedNodeCounter.incrementAndGet();
                                                     log.debug("[RequestId: {}][DAG: '{}'] Node '{}' completed with status: {}. Recorded result. Progress: {}/{}",
@@ -316,26 +311,18 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                                         handleFailureInternal(instanceName, result.getError().orElse(new RuntimeException("Unknown failure")),
                                                                 dagDefinition, failFastTriggered, overallSuccess, requestId, dagName);
                                                     }
-                                                    // Skipped 状态在 createSkippedResultMono 中处理
                                                 } else {
-                                                    // Mono 被重复订阅（理论上 cache() 会阻止逻辑重复执行，但此日志可能指示并发问题或 Reactor 内部行为）
                                                     log.warn("[RequestId: {}][DAG: '{}'] Node '{}' result ALREADY recorded, but doOnNext triggered again? Status: {}. This might indicate an issue.",
                                                             requestId, dagName, instanceName, result.getStatus());
                                                 }
                                             })
                                             .doOnError(error -> {
-                                                // 捕获 executeNode 或 createSkippedResultMono 内部未处理的错误
                                                 log.error("[RequestId: {}][DAG: '{}'] Unexpected error during execution/skip processing for node '{}'. Recording failure.",
                                                         requestId, dagName, instanceName, error);
-                                                // 确保记录为失败状态 (handleFailure 会处理 putIfAbsent)
                                                 handleFailure(instanceName, error, dagDefinition, completedResults, failFastTriggered, overallSuccess, completedNodeCounter, requestId, dagName);
                                             });
-                                    // 注意：cache() 操作符在 computeIfAbsent 的 lambda 返回之前隐式应用 (见下方 .cache())
                                 })); // end Mono.when.then
                     }) // end Mono.defer
-                    // .cache(): 核心！确保上面 defer 返回的整个 Mono 链 (包括依赖等待、执行、结果记录)
-                    // 只会被实际订阅和执行一次。后续的订阅者将直接收到缓存的最终结果 (onNext/onError/onComplete)。
-                    // 这可以防止节点的重复执行。
                     .cache();
         }); // end computeIfAbsent
     }
@@ -353,7 +340,6 @@ public class StandardDagEngine<C> implements DagEngine<C> {
             int count = completedNodeCounter.incrementAndGet();
             log.debug("[RequestId: {}][DAG: '{}'] Node '{}' recorded as SKIPPED. Progress: {}/{}",
                     requestId, dagName, instanceName, count, dagDefinition.getAllNodeInstanceNames().size());
-            // 跳过本身通常不标记整体失败，除非业务逻辑需要
         } else {
             log.warn("[RequestId: {}][DAG: '{}'] Node '{}' result ALREADY recorded when trying to mark as SKIPPED. This might indicate an issue.",
                     requestId, dagName, instanceName);
@@ -372,7 +358,6 @@ public class StandardDagEngine<C> implements DagEngine<C> {
         NodeResult<C, ?> failureResult = NodeResult.failure(error);
         if (completedResults.putIfAbsent(instanceName, failureResult) == null) {
             int count = completedNodeCounter.incrementAndGet();
-            // 使用 warn 级别记录失败事件
             log.warn("[RequestId: {}][DAG: '{}'] Node '{}' recorded as FAILURE. Progress: {}/{}. Error: {}",
                     requestId, dagName, instanceName, count, dagDefinition.getAllNodeInstanceNames().size(), error.getMessage());
             handleFailureInternal(instanceName, error, dagDefinition, failFastTriggered, overallSuccess, requestId, dagName);
@@ -388,55 +373,19 @@ public class StandardDagEngine<C> implements DagEngine<C> {
     private void handleFailureInternal(String instanceName, Throwable error, DagDefinition<C> dagDefinition,
                                        AtomicBoolean failFastTriggered, AtomicBoolean overallSuccess,
                                        String requestId, String dagName) {
-        overallSuccess.set(false); // 任何失败都会导致整体不成功
+        overallSuccess.set(false);
         if (dagDefinition.getErrorHandlingStrategy() == ErrorHandlingStrategy.FAIL_FAST) {
             if (failFastTriggered.compareAndSet(false, true)) {
                 log.warn("[RequestId: {}][DAG: '{}'] Node '{}' failed. Activating FAIL_FAST strategy. Error: {}",
-                        requestId, dagName, instanceName, error.getMessage()); // 只记录消息避免堆栈泛滥
+                        requestId, dagName, instanceName, error.getMessage());
             } else {
                 log.debug("[RequestId: {}][DAG: '{}'] Node '{}' failed, but FAIL_FAST was already active. Error: {}",
                         requestId, dagName, instanceName, error.getMessage());
             }
         } else { // CONTINUE_ON_FAILURE
-            // 失败已在 handleFailure 中以 warn 级别记录，这里不再重复记录
             log.debug("[RequestId: {}][DAG: '{}'] Node '{}' failed (CONTINUE_ON_FAILURE strategy). Execution continues.",
                     requestId, dagName, instanceName);
         }
-    }
-
-    /**
-     * 创建 ConditionInputAccessor 的实现。
-     */
-    private ConditionInputAccessor<C> createConditionInputAccessor(Map<String, NodeResult<C, ?>> completedResults) {
-        // 实现保持不变
-        return new ConditionInputAccessor<C>() {
-            @Override
-            public Optional<NodeResult.NodeStatus> getNodeStatus(String instanceName) {
-                return Optional.ofNullable(completedResults.get(instanceName)).map(NodeResult::getStatus);
-            }
-
-            @Override
-            @SuppressWarnings("unchecked")
-            public <P> Optional<P> getNodePayload(String instanceName, Class<P> expectedType) {
-                return Optional.ofNullable(completedResults.get(instanceName))
-                        .filter(NodeResult::isSuccess)
-                        .flatMap(NodeResult::getPayload)
-                        .filter(expectedType::isInstance)
-                        .map(p -> (P) p);
-            }
-
-            @Override
-            public Optional<Throwable> getNodeError(String instanceName) {
-                return Optional.ofNullable(completedResults.get(instanceName))
-                        .filter(NodeResult::isFailure)
-                        .flatMap(NodeResult::getError);
-            }
-
-            @Override
-            public Set<String> getCompletedNodeNames() {
-                return Collections.unmodifiableSet(new HashSet<>(completedResults.keySet()));
-            }
-        };
     }
 
     /**
@@ -446,17 +395,14 @@ public class StandardDagEngine<C> implements DagEngine<C> {
                                boolean failFastTriggered, boolean overallSuccess, int completedCount, int totalNodes) {
         String finalStatus;
         if (strategy == ErrorHandlingStrategy.FAIL_FAST) {
-            // FAIL_FAST 模式下，只要触发了就认为是 FAILED
-            finalStatus = failFastTriggered ? "FAILED (FAIL_FAST)" : "SUCCESS";
+            finalStatus = failFastTriggered ? "FAILED (FAIL_FAST)" : (overallSuccess ? "SUCCESS" : "FAILED");
         } else { // CONTINUE_ON_FAILURE
-            // CONTINUE 模式下，根据 overallSuccess 判断
             finalStatus = overallSuccess ? "SUCCESS" : "COMPLETED_WITH_FAILURES";
         }
         boolean allAccountedFor = (completedCount == totalNodes);
         log.info("[RequestId: {}][DAG: '{}'][Context: {}] Execution finished. Final Status: {}. Completed nodes accounted for: {}/{}. All nodes processed: {}",
                 requestId, dagName, contextTypeName, finalStatus, completedCount, totalNodes, allAccountedFor);
         if (!allAccountedFor) {
-            // 如果完成计数与总节点数不匹配，可能意味着逻辑错误或并发问题
             log.warn("[RequestId: {}][DAG: '{}'] Potential issue: Not all nodes ({}) were accounted for upon completion ({}). This might indicate an issue in the execution logic or graph structure.",
                     requestId, dagName, totalNodes, completedCount);
         }

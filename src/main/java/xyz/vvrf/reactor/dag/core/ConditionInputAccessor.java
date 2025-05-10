@@ -9,9 +9,9 @@ import java.util.Set;
  * 访问范围由引擎根据条件声明的依赖来限制。
  *
  * @param <C> 上下文类型
- * @author 重构者 (注释更新)
+ * @author ruifeng.wen
  */
-public interface ConditionInputAccessor<C> { // 不再是 @FunctionalInterface
+public interface ConditionInputAccessor<C> {
 
     /**
      * 获取指定实例名称的节点的结果状态。
@@ -49,6 +49,6 @@ public interface ConditionInputAccessor<C> { // 不再是 @FunctionalInterface
      * 获取所有被允许访问且已完成的节点实例名称集合。
      * @return 允许访问且已完成节点名称的不可变集合。
      */
-    Set<String> getCompletedNodeNames(); // 语义可能需要调整，是返回允许的还是允许且完成的？
+    Set<String> getCompletedNodeNames();
 
 }

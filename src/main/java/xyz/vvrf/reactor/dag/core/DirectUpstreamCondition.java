@@ -8,7 +8,7 @@ import java.util.Objects;
  *
  * @param <C> 上下文类型
  * @param <U> 直接上游节点的 Payload 类型
- * @author 重构者
+ * @author ruifeng.wen
  */
 @FunctionalInterface
 public interface DirectUpstreamCondition<C, U> extends ConditionBase<C> {
@@ -27,18 +27,16 @@ public interface DirectUpstreamCondition<C, U> extends ConditionBase<C> {
      * 表示边总是激活（除非上游失败）。
      * 这是边的默认条件。
      */
-    @SuppressWarnings("unchecked") // 类型安全，因为 evaluate 不使用 upstreamResult 的 payload
+    @SuppressWarnings("unchecked")
     static <C> DirectUpstreamCondition<C, Object> alwaysTrue() {
         return AlwaysTrueCondition.INSTANCE;
     }
 
-    // 内部类实现 alwaysTrue 单例
     class AlwaysTrueCondition<C, U> implements DirectUpstreamCondition<C, U> {
-        // 使用泛型确保类型匹配，但 evaluate 不依赖 U
-        @SuppressWarnings("rawtypes") // 静态实例，类型不重要
+        @SuppressWarnings("rawtypes")
         private static final AlwaysTrueCondition INSTANCE = new AlwaysTrueCondition<>();
 
-        private AlwaysTrueCondition() {} // 私有构造
+        private AlwaysTrueCondition() {}
 
         @Override
         public boolean evaluate(C context, NodeResult<C, U> upstreamResult) {
@@ -52,7 +50,6 @@ public interface DirectUpstreamCondition<C, U> extends ConditionBase<C> {
             return "Condition.alwaysTrue";
         }
 
-        // 如果需要更可靠的 equals/hashCode
         @Override
         public boolean equals(Object obj) {
             return obj instanceof AlwaysTrueCondition;

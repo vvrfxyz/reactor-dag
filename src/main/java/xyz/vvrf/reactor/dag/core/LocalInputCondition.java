@@ -5,7 +5,7 @@ package xyz.vvrf.reactor.dag.core;
  * 适用于需要联合判断多个直接输入来源的场景。
  *
  * @param <C> 上下文类型
- * @author 重构者
+ * @author ruifeng.wen
  */
 @FunctionalInterface
 public interface LocalInputCondition<C> extends ConditionBase<C> {

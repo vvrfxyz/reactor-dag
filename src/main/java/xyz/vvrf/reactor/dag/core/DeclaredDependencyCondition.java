@@ -4,10 +4,10 @@ import java.util.Set;
 
 /**
  * 最复杂的条件类型，依赖于当前上下文、直接上游节点结果，以及显式声明依赖的其他节点结果。
- * 应谨慎使用，仅用于无法通过前两种条件类型表达的特殊场景。
+ * 应谨慎使用，仅用于无法通过其他条件类型表达的特殊场景。
  *
  * @param <C> 上下文类型
- * @author 重构者
+ * @author ruifeng.wen
  */
 public interface DeclaredDependencyCondition<C> extends ConditionBase<C> {
 
@@ -24,8 +24,9 @@ public interface DeclaredDependencyCondition<C> extends ConditionBase<C> {
      * 声明此条件除了直接上游节点外，还需要访问哪些其他节点实例的结果。
      * 引擎将使用此信息来提供一个受限制的 {@link ConditionInputAccessor}。
      * **实现此接口必须提供非空的依赖集合（如果确实需要额外依赖）。**
+     * 如果不需要额外依赖（仅直接上游），应考虑使用 {@link DirectUpstreamCondition} 或 {@link LocalInputCondition}。
      *
-     * @return 一个包含额外所需节点实例名称的不可变集合。不能为空。
+     * @return 一个包含额外所需节点实例名称的不可变集合。如果仅依赖直接上游，可以返回空集合，但更推荐使用其他条件类型。
      */
     Set<String> getRequiredNodeDependencies();
 }
