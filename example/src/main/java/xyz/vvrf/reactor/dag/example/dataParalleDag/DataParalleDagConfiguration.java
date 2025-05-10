@@ -7,8 +7,11 @@ import xyz.vvrf.reactor.dag.builder.DagDefinitionBuilder;
 import xyz.vvrf.reactor.dag.core.DagDefinition;
 import xyz.vvrf.reactor.dag.core.OutputSlot;
 import xyz.vvrf.reactor.dag.example.dataParalleDag.node.*;
+import xyz.vvrf.reactor.dag.monitor.web.service.DagDefinitionCache;
 import xyz.vvrf.reactor.dag.registry.NodeRegistry;
 import xyz.vvrf.reactor.dag.registry.SpringScanningNodeRegistry; // 引入扫描注册表
+
+import javax.annotation.Resource;
 
 /**
  * DataParallel DAG 的 Spring 配置类 (适配简化后的框架)。
@@ -20,6 +23,9 @@ import xyz.vvrf.reactor.dag.registry.SpringScanningNodeRegistry; // 引入扫描
 @Configuration
 @Slf4j
 public class DataParalleDagConfiguration {
+
+    @Resource
+    private DagDefinitionCache dagDefinitionCache;
 
     // 节点实例名称 (保持不变)
     private static final String INSTANCE_START = "startNode";
@@ -55,6 +61,7 @@ public class DataParalleDagConfiguration {
      */
     @Bean
     public DagDefinition<ParalleContext> dataParallelDagDefinition(NodeRegistry<ParalleContext> nodeRegistry) {
+
         log.info("开始构建 DataParallel DAG 定义...");
         DagDefinitionBuilder<ParalleContext> builder = new DagDefinitionBuilder<>(
                 ParalleContext.class,
@@ -86,6 +93,8 @@ public class DataParalleDagConfiguration {
         try {
             // 构建并返回不可变的 DAG 定义
             DagDefinition<ParalleContext> definition = builder.build();
+            String dotString = builder.getLastGeneratedDotCode();
+            dagDefinitionCache.cacheDag(definition, dotString);
             log.info("DataParallel DAG 定义构建成功！");
             return definition;
         } catch (IllegalStateException e) {

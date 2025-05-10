@@ -1,5 +1,6 @@
 package xyz.vvrf.reactor.dag.builder;
 
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import reactor.util.retry.Retry;
 import xyz.vvrf.reactor.dag.core.*;
@@ -30,6 +31,10 @@ public class DagDefinitionBuilder<C> {
 
     private final Map<String, NodeDefinition> nodeDefinitions = new LinkedHashMap<>();
     private final List<EdgeDefinition<C>> edgeDefinitions = new ArrayList<>();
+
+    @Getter
+    private String lastGeneratedDotCode = null;
+
 
     public DagDefinitionBuilder(Class<C> contextType, String dagName, NodeRegistry<C> nodeRegistry) {
         this.contextType = Objects.requireNonNull(contextType, "上下文类型不能为空");
@@ -218,8 +223,8 @@ public class DagDefinitionBuilder<C> {
         printDagStructure(finalNodeDefinitions);
 
         try {
-            String dotCode = generateDotRepresentation(finalNodeDefinitions, finalEdgeDefinitions);
-            log.info("DAG '{}' DOT 图形描述:\n--- DOT BEGIN ---\n{}\n--- DOT END ---", dagName, dotCode);
+            this.lastGeneratedDotCode = generateDotRepresentation(finalNodeDefinitions, finalEdgeDefinitions);
+            log.info("DAG '{}' DOT 图形描述:\n--- DOT BEGIN ---\n{}\n--- DOT END ---", dagName, lastGeneratedDotCode);
         } catch (Exception e) {
             log.error("DAG '{}': 生成 DOT 图形描述时发生错误: {}", dagName, e.getMessage(), e);
         }

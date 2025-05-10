@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>DAG 实时监控 (按 DAG Name)</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+    <link href="https://unpkg.com/vis-network@9.1.9/styles/vis-network.min.css" rel="stylesheet" type="text/css" />
+    <style>
+        body { font-family: 'Arial', sans-serif; display: flex; margin: 0; height: 100vh; background-color: #f0f2f5; overflow: hidden; }
+        #app { display: flex; width: 100%; height: 100%; }
+
+        #sidebar { width: 380px; min-width: 350px; background-color: #fff; border-right: 1px solid #d9d9d9; display: flex; flex-direction: column; box-shadow: 2px 0 8px rgba(0,0,0,0.05); }
+        .sidebar-header { padding: 20px; border-bottom: 1px solid #f0f0f0; }
+        .sidebar-header h2 { margin: 0 0 15px 0; color: #333; font-size: 1.4em; }
+        .sidebar-header input[type="text"] { width: calc(100% - 22px); padding: 10px; margin-bottom: 10px; border: 1px solid #d9d9d9; border-radius: 4px; box-sizing: border-box; }
+        .sidebar-header button { width: 100%; padding: 10px 15px; background-color: #1890ff; color: white; border: none; border-radius: 4px; cursor: pointer; transition: background-color 0.3s; font-size: 1em; }
+        .sidebar-header button:hover { background-color: #40a9ff; }
+        .sidebar-header button:disabled { background-color: #f5f5f5; color: #bfbfbf; cursor: not-allowed; }
+
+        .instances-list-container { flex-grow: 1; overflow-y: auto; padding: 0; }
+        .instances-list-container h3 { padding: 15px 20px 10px; margin:0; background-color:#f9f9f9; border-bottom: 1px solid #f0f0f0; color: #555; font-size: 1.1em;}
+        .instance-item { padding: 12px 20px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background-color 0.2s; }
+        .instance-item:hover { background-color: #e6f7ff; }
+        .instance-item.selected { background-color: #bae7ff; font-weight: bold; }
+        .instance-id { font-size: 0.95em; color: #333; margin-bottom: 4px; word-break: break-all; }
+        .instance-status { font-size: 0.85em; }
+        .status-RUNNING { color: #1890ff; }
+        .status-SUCCESS { color: #52c41a; }
+        .status-FAILURE { color: #f5222d; }
+        .status-PENDING { color: #faad14; } /* For instances that appeared but not fully started */
+
+        #main-content { flex-grow: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; }
+        .main-header { margin-bottom: 15px; }
+        .main-header h3 { margin: 0 0 5px 0; color: #333; }
+        .main-header p { margin: 0; color: #777; }
+        .status-overall { padding: 10px; border-radius: 4px; margin-bottom: 10px; border: 1px solid transparent; }
+        .status-overall.dag-connecting { background-color: #fffbe6; border-color: #ffe58f; }
+        .status-overall.dag-running { background-color: #e6f7ff; border-color: #91d5ff; }
+        .status-overall.dag-success { background-color: #f6ffed; border-color: #b7eb8f; }
+        .status-overall.dag-failure { background-color: #fff1f0; border-color: #ffa39e; }
+        .status-overall.dag-error { background-color: #fff2e8; border-color: #ffbb96; }
+
+
+        #dag-graph-container { flex-grow: 1; border: 1px solid #d9d9d9; background-color: #fff; position: relative; min-height: 300px; border-radius: 4px; }
+        #dag-graph { width: 100%; height: 100%; }
+
+        .node-details-container { margin-top: 20px; max-height: 300px; overflow-y: auto; padding: 15px; background-color:#fff; border: 1px solid #d1d9e0; border-radius:5px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .node-details-container h3 { margin-top:0; }
+        pre { background-color: #f7f7f7; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-size: 0.9em; max-height: 100px; overflow-y: auto; border: 1px solid #eee;}
+        .error-text { color: #cf1322; }
+        .no-selection { text-align: center; color: #999; padding: 50px; font-size: 1.2em; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div id="sidebar">
+        <div class="sidebar-header">
+            <h2>DAG 监控</h2>
+            <input type="text" v-model="dagNameInput" placeholder="输入 DAG Name" @keyup.enter="monitorDag" :disabled="isMonitoring">
+            <button @click="monitorDag" :disabled="isMonitoring || !dagNameInput.trim()">监控指定DAG</button>
+            <button @click="stopMonitoring" v-if="isMonitoring" style="background-color: #ff4d4f; margin-top: 10px;">停止监控</button>
+        </div>
+
+        <div class="instances-list-container">
+            <h3 v-if="monitoringDagName">实例列表: {{ monitoringDagName }}</h3>
+            <div v-if="Object.keys(activeInstances).length === 0 && isMonitoring" style="padding: 20px; text-align: center; color: #888;">
+                等待 {{ monitoringDagName }} 的实例运行...
+            </div>
+            <ul>
+                <li v-for="instance in sortedInstances" :key="instance.requestId"
+                    class="instance-item"
+                    :class="{ selected: instance.requestId === selectedRequestId }"
+                    @click="selectInstance(instance.requestId)">
+                    <div class="instance-id">ID: {{ instance.requestId }}</div>
+                    <div class="instance-status" :class="'status-' + instance.status">
+                        状态: {{ instance.statusText }}
+                        <span v-if="instance.durationMillis"> ({{ instance.durationMillis }}ms)</span>
+                    </div>
+                    <div v-if="instance.startTime" style="font-size: 0.8em; color: #777;">
+                        开始: {{ new Date(instance.startTime).toLocaleString() }}
+                    </div>
+                </li>
+            </ul>
+        </div>
+    </div>
+
+    <div id="main-content">
+        <div v-if="selectedRequestId && activeInstances[selectedRequestId]">
+            <div class="main-header">
+                <h3>DAG 实例详情: {{ selectedRequestId }}</h3>
+                <div class="status-overall" :class="selectedInstanceOverallStatusClass">
+                    <p><strong>DAG 名称:</strong> {{ activeInstances[selectedRequestId].dagName }}</p>
+                    <p><strong>状态:</strong> {{ selectedInstanceStatusMessage }}</p>
+                    <p v-if="activeInstances[selectedRequestId].errorSummary"><strong>错误摘要:</strong> <pre class="error-text">{{ activeInstances[selectedRequestId].errorSummary }}</pre></p>
+                </div>
+            </div>
+            <div id="dag-graph-container">
+                <div id="dag-graph"></div>
+            </div>
+            <div v-if="selectedGraphNodeDetails" class="node-details-container">
+                <h3>节点: {{ selectedGraphNodeDetails.id }}</h3>
+                <p><strong>类型:</strong> {{ selectedGraphNodeDetails.typeId }}</p>
+                <p><strong>状态:</strong> <span :style="{ color: selectedGraphNodeDetails.statusColor }">{{ selectedGraphNodeDetails.statusText }}</span></p>
+                <p v-if="selectedGraphNodeDetails.durationMillis != null"><strong>总耗时:</strong> {{ selectedGraphNodeDetails.durationMillis }} ms</p>
+                <p v-if="selectedGraphNodeDetails.logicDurationMillis != null"><strong>逻辑耗时:</strong> {{ selectedGraphNodeDetails.logicDurationMillis }} ms</p>
+                <div v-if="selectedGraphNodeDetails.payloadSummary"><strong>Payload (摘要):</strong> <pre>{{ selectedGraphNodeDetails.payloadSummary }}</pre></div>
+                <div v-if="selectedGraphNodeDetails.errorSummary" class="error-text"><strong>错误:</strong> <pre>{{ selectedGraphNodeDetails.errorSummary }}</pre></div>
+            </div>
+        </div>
+        <div v-else class="no-selection">
+            <p v-if="monitoringDagName">请从左侧选择一个实例进行查看。</p>
+            <p v-else>请输入 DAG Name 并点击监控。</p>
+        </div>
+    </div>
+</div>
+
+<script>
+    const { createApp, ref, reactive, computed, onMounted, watch, nextTick } = Vue;
+
+    createApp({
+        setup() {
+            const dagNameInput = ref('');
+            const monitoringDagName = ref('');
+            const eventSource = ref(null);
+            const network = ref(null);
+            const dagDefinitionDot = ref('');
+            const isMonitoring = ref(false);
+
+            const activeInstances = reactive({}); // Key: requestId, Value: { requestId, dagName, status, startTime, durationMillis, errorSummary, nodes: { nodeId: eventData } }
+            const selectedRequestId = ref(null);
+            const selectedGraphNodeDetails = ref(null); // Details of the node clicked in the vis.js graph
+
+            const visNodes = new vis.DataSet();
+            const visEdges = new vis.DataSet();
+
+            const graphOptions = {
+                layout: { hierarchical: { enabled: true, direction: 'LR', sortMethod: 'directed', levelSeparation: 230, nodeSpacing: 150, treeSpacing: 250 }},
+                edges: { arrows: 'to', smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 }, font: { align: 'middle', size: 10 }},
+                physics: false,
+                nodes: { shape: 'box', margin: { top: 10, right: 15, bottom: 10, left: 15 }, font: { size: 12 }, borderWidth: 1, widthConstraint: { minimum: 120, maximum: 250 }, heightConstraint: { minimum: 60 }},
+                interaction: { hover: true, tooltipDelay: 200 }
+            };
+
+            const getNodeStyle = (status) => { // status from MonitoringEvent.nodeStatus (SUCCESS, FAILURE, SKIPPED, null for RUNNING)
+                switch (status) {
+                    case 'SUCCESS': return { text: 'SUCCESS', color: '#52c41a', fontColor: 'white' };
+                    case 'FAILURE': return { text: 'FAILURE', color: '#f5222d', fontColor: 'white' };
+                    case 'SKIPPED': return { text: 'SKIPPED', color: '#bfbfbf', fontColor: '#333' };
+                    case null: return { text: 'RUNNING', color: '#1890ff', fontColor: 'white' }; // Backend sends null for RUNNING/IN_PROGRESS
+                    default: return { text: 'PENDING', color: '#d9d9d9', fontColor: '#333' }; // Default for nodes not yet started
+                }
+            };
+
+            const sortedInstances = computed(() => {
+                return Object.values(activeInstances)
+                    .sort((a, b) => (b.startTime || 0) - (a.startTime || 0)); // Newest first
+            });
+
+            const selectedInstanceOverallStatus = computed(() => {
+                if (!selectedRequestId.value || !activeInstances[selectedRequestId.value]) return { status: null };
+                return activeInstances[selectedRequestId.value];
+            });
+
+            const selectedInstanceStatusMessage = computed(() => {
+                const instance = selectedInstanceOverallStatus.value;
+                if (!instance || !instance.status) return '加载中...';
+                let msg = instance.statusText;
+                if (instance.durationMillis) msg += ` (总耗时: ${instance.durationMillis} ms)`;
+                return msg;
+            });
+
+            const selectedInstanceOverallStatusClass = computed(() => {
+                const instance = selectedInstanceOverallStatus.value;
+                if (!instance || !instance.status) return 'dag-connecting';
+                return `dag-${instance.status.toLowerCase()}`;
+            });
+
+
+            async function fetchDagDefinition(dagName) {
+                try {
+                    const response = await fetch(`/dag-monitor/dag-definition/${dagName}/dot`);
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        alert(`无法加载DAG '${dagName}' 的定义 (HTTP ${response.status}).\n错误: ${errorText}`);
+                        stopMonitoringCleanup(); // Stop if definition fails
+                        return false;
+                    }
+                    dagDefinitionDot.value = await response.text();
+                    if (!dagDefinitionDot.value || dagDefinitionDot.value.trim() === "") {
+                        alert(`DAG '${dagName}' 的DOT定义为空。`);
+                        stopMonitoringCleanup();
+                        return false;
+                    }
+                    return true;
+                } catch (error) {
+                    console.error("获取DAG DOT定义失败:", error);
+                    alert("获取DAG定义时出错: " + error.message);
+                    stopMonitoringCleanup();
+                    return false;
+                }
+            }
+
+            function drawGraphForSelectedInstance() {
+                if (!selectedRequestId.value || !dagDefinitionDot.value || !activeInstances[selectedRequestId.value]) {
+                    visNodes.clear();
+                    visEdges.clear();
+                    if (network.value) network.value.setData({ nodes: visNodes, edges: visEdges });
+                    return;
+                }
+                console.log(`Drawing graph for ${selectedRequestId.value} with DOT:`, dagDefinitionDot.value.substring(0,100) + "...");
+
+                try {
+                    const parsedData = vis.parseDOTNetwork(dagDefinitionDot.value);
+                    visNodes.clear();
+                    visEdges.clear();
+
+                    const instanceNodeStates = activeInstances[selectedRequestId.value].nodes || {};
+
+                    const initialNodes = parsedData.nodes.map(n => {
+                        const typeIdMatch = n.label ? n.label.match(/\(([^)]+)\)/) : null;
+                        const typeId = typeIdMatch ? typeIdMatch[1] : (n.label || n.id);
+
+                        const nodeEvent = instanceNodeStates[n.id]; // Get latest event for this node if available
+                        const style = getNodeStyle(nodeEvent ? nodeEvent.nodeStatus : 'PENDING_INIT'); // PENDING_INIT for initial draw
+
+                        return {
+                            id: n.id,
+                            label: `${n.id}\n(${typeId})\n${style.text}`,
+                            title: `ID: ${n.id}\n类型: ${typeId}\n状态: ${style.text}`,
+                            color: { background: style.color, border: vis.util.manipulateColor(style.color, 0.3).border },
+                            font: { color: style.fontColor },
+                            typeId: typeId, // Store for details panel
+                            // Store original event data if available
+                            ...(nodeEvent && { monitoringData: nodeEvent })
+                        };
+                    });
+                    visNodes.add(initialNodes);
+                    visEdges.add(parsedData.edges.map(edge => ({...edge, label: edge.label ? edge.label.replace(/\\n/g, '\n') : undefined})));
+
+                    if (!network.value) {
+                        const container = document.getElementById('dag-graph');
+                        network.value = new vis.Network(container, { nodes: visNodes, edges: visEdges }, graphOptions);
+                        network.value.on("click", params => {
+                            if (params.nodes.length > 0) {
+                                const nodeId = params.nodes[0];
+                                const visNodeData = visNodes.get(nodeId);
+                                const nodeMonitoringData = activeInstances[selectedRequestId.value]?.nodes?.[nodeId] || visNodeData?.monitoringData;
+
+                                if (nodeMonitoringData) {
+                                    const style = getNodeStyle(nodeMonitoringData.nodeStatus);
+                                    selectedGraphNodeDetails.value = {
+                                        id: nodeId,
+                                        typeId: nodeMonitoringData.nodeTypeId || visNodeData.typeId,
+                                        statusText: style.text,
+                                        statusColor: style.color,
+                                        durationMillis: nodeMonitoringData.durationMillis,
+                                        logicDurationMillis: nodeMonitoringData.logicDurationMillis,
+                                        payloadSummary: nodeMonitoringData.payloadSummary,
+                                        errorSummary: nodeMonitoringData.errorSummary
+                                    };
+                                } else if (visNodeData) { // Fallback to visNodeData if no specific event data (e.g. pure PENDING)
+                                    const style = getNodeStyle('PENDING_INIT');
+                                    selectedGraphNodeDetails.value = {
+                                        id: nodeId,
+                                        typeId: visNodeData.typeId,
+                                        statusText: style.text,
+                                        statusColor: style.color,
+                                    };
+                                } else {
+                                    selectedGraphNodeDetails.value = null;
+                                }
+                            } else {
+                                selectedGraphNodeDetails.value = null;
+                            }
+                        });
+                    } else {
+                        network.value.setData({ nodes: visNodes, edges: visEdges });
+                    }
+                    network.value.fit();
+                } catch (error) {
+                    console.error("Error parsing DOT or drawing graph:", error);
+                    alert("渲染DAG图形时出错: " + error.message);
+                }
+            }
+
+            function updateNodeVisualInGraph(eventData) {
+                if (!network.value || eventData.requestId !== selectedRequestId.value) return;
+
+                const existingVisNode = visNodes.get(eventData.instanceName);
+                if (!existingVisNode) {
+                    console.warn("Node not found in vis.DataSet for update:", eventData.instanceName);
+                    // This might happen if DOT definition is out of sync or an unexpected node appears.
+                    // For now, we'll just log. Could dynamically add it, but that might mess layout.
+                    return;
+                }
+
+                const style = getNodeStyle(eventData.nodeStatus);
+                visNodes.update({
+                    id: eventData.instanceName,
+                    label: `${eventData.instanceName}\n(${eventData.nodeTypeId || existingVisNode.typeId})\n${style.text}`,
+                    color: { background: style.color, border: vis.util.manipulateColor(style.color, 0.3).border },
+                    font: { color: style.fontColor },
+                    title: `ID: ${eventData.instanceName}\n类型: ${eventData.nodeTypeId || existingVisNode.typeId}\n状态: ${style.text}` +
+                        (eventData.durationMillis != null ? `\n总耗时: ${eventData.durationMillis}ms` : '') +
+                        (eventData.errorSummary ? `\n错误: ${eventData.errorSummary}` : ''),
+                    monitoringData: eventData // Update stored monitoring data
+                });
+
+                // If this node is currently selected for details, update details panel
+                if (selectedGraphNodeDetails.value && selectedGraphNodeDetails.value.id === eventData.instanceName) {
+                    selectedGraphNodeDetails.value = {
+                        ...selectedGraphNodeDetails.value, // keep old fields if not in eventData
+                        typeId: eventData.nodeTypeId || existingVisNode.typeId,
+                        statusText: style.text,
+                        statusColor: style.color,
+                        durationMillis: eventData.durationMillis,
+                        logicDurationMillis: eventData.logicDurationMillis,
+                        payloadSummary: eventData.payloadSummary,
+                        errorSummary: eventData.errorSummary
+                    };
+                }
+            }
+
+            function stopMonitoringCleanup() {
+                if (eventSource.value) {
+                    eventSource.value.close();
+                    eventSource.value = null;
+                }
+                // Do not clear activeInstances or selectedRequestId here, user might want to inspect them
+                // monitoringDagName.value = ''; // Keep it to show what was monitored
+                // dagDefinitionDot.value = '';
+                isMonitoring.value = false;
+                // visNodes.clear();
+                // visEdges.clear();
+                // if (network.value) network.value.setData({ nodes: visNodes, edges: visEdges });
+                // selectedGraphNodeDetails.value = null;
+                console.log("Monitoring stopped.");
+            }
+
+            function stopMonitoring() {
+                stopMonitoringCleanup();
+                // Optionally, clear more states if desired when explicitly stopping
+                monitoringDagName.value = '';
+                dagNameInput.value = ''; // Clear input
+                dagDefinitionDot.value = '';
+                Object.keys(activeInstances).forEach(key => delete activeInstances[key]);
+                selectedRequestId.value = null;
+                selectedGraphNodeDetails.value = null;
+                visNodes.clear();
+                visEdges.clear();
+                if (network.value) network.value.setData({ nodes: visNodes, edges: visEdges });
+            }
+
+
+            async function monitorDag() {
+                const currentDagNameToMonitor = dagNameInput.value.trim();
+
+                if (!dagNameInput.value.trim()) {
+                    alert("请输入有效的 DAG Name。");
+                    return;
+                }
+                stopMonitoring(); // Clear previous monitoring state completely before starting new
+
+                monitoringDagName.value = currentDagNameToMonitor;
+                isMonitoring.value = true; // Set monitoring flag
+
+                const gotDefinition = await fetchDagDefinition(monitoringDagName.value);
+                if (!gotDefinition) {
+                    isMonitoring.value = false; // Reset flag if definition fetch failed
+                    return;
+                }
+
+                eventSource.value = new EventSource(`/dag-monitor/stream/${monitoringDagName.value}`);
+
+                eventSource.value.onopen = () => {
+                    console.log(`SSE connection established for DAG: ${monitoringDagName.value}`);
+                };
+
+                const handleEvent = (eventType, rawEventData) => {
+                    const eventData = JSON.parse(rawEventData);
+                    console.log(`SSE Event [${eventType}] for ${eventData.dagName} (req: ${eventData.requestId}):`, eventData);
+
+                    if (eventData.dagName !== monitoringDagName.value) {
+                        console.warn(`Received event for ${eventData.dagName} while monitoring ${monitoringDagName.value}. Ignoring.`);
+                        return; // Should not happen with backend changes, but good check
+                    }
+
+                    const reqId = eventData.requestId;
+
+                    if (!activeInstances[reqId]) {
+                        // Initialize instance if it's new
+                        activeInstances[reqId] = reactive({
+                            requestId: reqId,
+                            dagName: eventData.dagName,
+                            status: 'PENDING', // Initial status before DAG_START or first NODE_UPDATE
+                            statusText: '等待启动...',
+                            startTime: null, // Will be set by DAG_START
+                            nodes: {}
+                        });
+                    }
+                    const currentInstance = activeInstances[reqId];
+
+                    switch (eventType) {
+                        case 'DAG_START':
+                            currentInstance.status = 'RUNNING';
+                            currentInstance.statusText = '运行中';
+                            currentInstance.startTime = Date.now(); // Use client time for start if not in event
+                            currentInstance.dagName = eventData.dagName; // Confirm dagName
+                            // If no instance is selected, select this new one
+                            if (!selectedRequestId.value) {
+                                selectInstance(reqId);
+                            } else if (reqId === selectedRequestId.value) {
+                                // If it's already selected (e.g. historical event replayed), redraw
+                                nextTick(drawGraphForSelectedInstance);
+                            }
+                            break;
+                        case 'NODE_UPDATE':
+                            currentInstance.nodes[eventData.instanceName] = eventData;
+                            if (reqId === selectedRequestId.value) {
+                                updateNodeVisualInGraph(eventData);
+                            }
+                            // Update overall instance status if it's still PENDING/RUNNING
+                            if (currentInstance.status === 'PENDING' || currentInstance.status === 'RUNNING') {
+                                currentInstance.status = 'RUNNING'; // Mark as running if any node updates
+                                currentInstance.statusText = '运行中';
+                                if (!currentInstance.startTime && eventData.dagName === currentInstance.dagName) {
+                                    // Heuristic: if DAG_START was missed but nodes update, set a start time
+                                    // This is a fallback, DAG_START should ideally set it.
+                                    currentInstance.startTime = Date.now() - (eventData.durationMillis || 0);
+                                }
+                            }
+                            break;
+                        case 'DAG_COMPLETE':
+                            currentInstance.status = eventData.dagSuccess ? 'SUCCESS' : 'FAILURE';
+                            currentInstance.statusText = eventData.dagSuccess ? '成功' : '失败';
+                            currentInstance.durationMillis = eventData.durationMillis;
+                            currentInstance.errorSummary = eventData.errorSummary;
+                            // No need to close eventSource here, it's per dagName
+                            if (reqId === selectedRequestId.value) {
+                                // Refresh graph to show final states if any node was missed
+                                nextTick(drawGraphForSelectedInstance);
+                            }
+                            break;
+                        case 'SERIALIZATION_ERROR':
+                            console.error("SSE Serialization Error:", eventData);
+                            alert(`服务器数据序列化错误: ${eventData.error}`);
+                            // Potentially stop monitoring or show global error
+                            break;
+                    }
+                };
+
+                eventSource.value.addEventListener('DAG_START', e => handleEvent('DAG_START', e.data));
+                eventSource.value.addEventListener('NODE_UPDATE', e => handleEvent('NODE_UPDATE', e.data));
+                eventSource.value.addEventListener('DAG_COMPLETE', e => handleEvent('DAG_COMPLETE', e.data));
+                eventSource.value.addEventListener('SERIALIZATION_ERROR', e => handleEvent('SERIALIZATION_ERROR', e.data));
+
+                eventSource.value.onerror = (error) => {
+                    console.error("EventSource error:", error);
+                    alert(`与服务器的连接中断或发生错误 (DAG: ${monitoringDagName.value}). 请检查控制台和网络。`);
+                    stopMonitoringCleanup(); // Stop monitoring on persistent error
+                };
+            }
+
+            function selectInstance(requestId) {
+                if (selectedRequestId.value === requestId) return; // No change
+
+                selectedRequestId.value = requestId;
+                selectedGraphNodeDetails.value = null; // Clear node details from previous selection
+                // The watch on selectedRequestId will trigger graph redraw
+            }
+
+            watch(selectedRequestId, (newVal, oldVal) => {
+                if (newVal) {
+                    console.log("Selected instance changed to:", newVal);
+                    nextTick(drawGraphForSelectedInstance);
+                } else {
+                    // Clear graph if no instance is selected
+                    visNodes.clear();
+                    visEdges.clear();
+                    if(network.value) network.value.setData({ nodes: visNodes, edges: visEdges });
+                }
+            });
+
+            onMounted(() => {
+                // Initialize network only once, it will be updated with setData
+                const container = document.getElementById('dag-graph');
+                if (container && !network.value) {
+                    network.value = new vis.Network(container, { nodes: visNodes, edges: visEdges }, graphOptions);
+                    network.value.on("click", params => {
+                        if (params.nodes.length > 0 && selectedRequestId.value) { // Ensure an instance is selected
+                            const nodeId = params.nodes[0];
+                            const visNodeData = visNodes.get(nodeId); // Get data from vis.DataSet
+                            // activeInstances[selectedRequestId.value].nodes should have the most up-to-date event data
+                            const nodeMonitoringData = activeInstances[selectedRequestId.value]?.nodes?.[nodeId] || visNodeData?.monitoringData;
+
+
+                            if (nodeMonitoringData) {
+                                const style = getNodeStyle(nodeMonitoringData.nodeStatus);
+                                selectedGraphNodeDetails.value = {
+                                    id: nodeId,
+                                    typeId: nodeMonitoringData.nodeTypeId || visNodeData?.typeId || 'N/A',
+                                    statusText: style.text,
+                                    statusColor: style.color,
+                                    durationMillis: nodeMonitoringData.durationMillis,
+                                    logicDurationMillis: nodeMonitoringData.logicDurationMillis,
+                                    payloadSummary: nodeMonitoringData.payloadSummary,
+                                    errorSummary: nodeMonitoringData.errorSummary
+                                };
+                            } else if (visNodeData) { // Fallback if no specific monitoring data (e.g. pure PENDING from DOT)
+                                const style = getNodeStyle('PENDING_INIT');
+                                selectedGraphNodeDetails.value = {
+                                    id: nodeId,
+                                    typeId: visNodeData.typeId || 'N/A',
+                                    statusText: style.text,
+                                    statusColor: style.color,
+                                };
+                            } else {
+                                selectedGraphNodeDetails.value = null;
+                            }
+                        } else {
+                            selectedGraphNodeDetails.value = null;
+                        }
+                    });
+                }
+            });
+
+            return {
+                dagNameInput,
+                monitoringDagName,
+                isMonitoring,
+                monitorDag,
+                stopMonitoring,
+                activeInstances,
+                sortedInstances,
+                selectedRequestId,
+                selectInstance,
+                selectedGraphNodeDetails,
+                selectedInstanceStatusMessage,
+                selectedInstanceOverallStatusClass
+            };
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>
