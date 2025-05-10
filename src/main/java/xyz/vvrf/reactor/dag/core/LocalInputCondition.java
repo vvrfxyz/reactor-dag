@@ -18,4 +18,9 @@ public interface LocalInputCondition<C> extends ConditionBase<C> {
      * @return 如果条件满足，则返回 true；否则返回 false。
      */
     boolean evaluate(C context, LocalInputAccessor<C> localInputs);
+
+    @Override
+    default String getConditionTypeDisplayName() {
+        return "LocalInput";
+    }
 }

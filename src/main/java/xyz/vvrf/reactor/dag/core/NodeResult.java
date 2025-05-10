@@ -1,6 +1,7 @@
 package xyz.vvrf.reactor.dag.core;
 
 import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 
 import java.util.Objects;
@@ -14,6 +15,7 @@ import java.util.Optional;
  * @param <P> 结果 Payload 类型 (对应节点的主输出槽)
  * @author Refactored (注释更新)
  */
+@Slf4j
 public final class NodeResult<C, P> { // C 仅用于工厂方法签名
 
     /**
@@ -51,11 +53,11 @@ public final class NodeResult<C, P> { // C 仅用于工厂方法签名
         }
         if (status == NodeStatus.SKIPPED && payload.isPresent()) {
             // 允许但不推荐 SKIPPED 带有 payload，打印警告
-            System.err.printf("警告: 创建了一个 SKIPPED 状态的 NodeResult，但其包含了 Payload: %s%n", payload.get());
+            log.warn("警告: 创建了一个 SKIPPED 状态的 NodeResult，但其包含了 Payload: {}", payload.get());
         }
         if (status == NodeStatus.SKIPPED && events != Flux.<Event<?>>empty()) {
             // 允许但不推荐 SKIPPED 带有 events，打印警告
-            System.err.println("警告: 创建了一个 SKIPPED 状态的 NodeResult，但其包含了事件流。");
+            log.warn("警告: 创建了一个 SKIPPED 状态的 NodeResult，但其包含了事件流。");
         }
     }
 

@@ -8,5 +8,10 @@ package xyz.vvrf.reactor.dag.core;
  * @author ruifeng.wen
  */
 public interface ConditionBase<C> {
-    // 这是一个标记接口，没有方法。
+    /**
+     * 获取条件的易读类型名称，主要用于日志和调试。
+     *
+     * @return 条件的显示名称字符串。
+     */
+    String getConditionTypeDisplayName();
 }

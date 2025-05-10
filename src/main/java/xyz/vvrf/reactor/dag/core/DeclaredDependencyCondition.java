@@ -1,6 +1,7 @@
 package xyz.vvrf.reactor.dag.core;
 
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 最复杂的条件类型，依赖于当前上下文、直接上游节点结果，以及显式声明依赖的其他节点结果。
@@ -29,4 +30,13 @@ public interface DeclaredDependencyCondition<C> extends ConditionBase<C> {
      * @return 一个包含额外所需节点实例名称的不可变集合。如果仅依赖直接上游，可以返回空集合，但更推荐使用其他条件类型。
      */
     Set<String> getRequiredNodeDependencies();
+
+    @Override
+    default String getConditionTypeDisplayName() {
+        Set<String> deps = getRequiredNodeDependencies();
+        String depsStr = (deps == null || deps.isEmpty()) ? "None" : deps.stream().collect(Collectors.joining(", "));
+        // 如果是具体实现类，它可以通过覆盖此方法来使用 this.getClass().getSimpleName()
+        // 但作为接口的默认方法，我们提供一个通用的名称。
+        return String.format("DeclaredDependency (Deps: %s)", depsStr);
+    }
 }

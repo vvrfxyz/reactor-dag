@@ -96,19 +96,9 @@ public final class EdgeDefinition<C> {
 
     @Override
     public String toString() {
-        String conditionStr;
-        if (condition instanceof DirectUpstreamCondition.AlwaysTrueCondition) {
-            conditionStr = "AlwaysTrue";
-        } else if (condition instanceof DirectUpstreamCondition) {
-            conditionStr = condition.getClass().getSimpleName() + " (Direct)";
-        } else if (condition instanceof LocalInputCondition) {
-            conditionStr = condition.getClass().getSimpleName() + " (Local)";
-        } else if (condition instanceof DeclaredDependencyCondition) {
-            Set<String> deps = ((DeclaredDependencyCondition<C>) condition).getRequiredNodeDependencies();
-            conditionStr = condition.getClass().getSimpleName() + " (Deps: " + (deps == null || deps.isEmpty() ? "None" : deps) + ")";
-        } else {
-            conditionStr = condition.getClass().getName() + " (Unknown Type)";
-        }
+        // 直接使用 condition 的 getConditionTypeDisplayName() 方法
+        // 由于构造函数保证了 condition 不为 null，所以可以直接调用
+        String conditionStr = condition.getConditionTypeDisplayName();
 
         return String.format("Edge[%s(%s) -> %s(%s), Condition: %s]",
                 upstreamInstanceName, outputSlotId,

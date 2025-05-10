@@ -32,6 +32,12 @@ public interface DirectUpstreamCondition<C, U> extends ConditionBase<C> {
         return AlwaysTrueCondition.INSTANCE;
     }
 
+    @Override
+    default String getConditionTypeDisplayName() {
+        // 对于 lambda 实现或匿名类，提供一个通用的名称
+        return "DirectUpstream";
+    }
+
     class AlwaysTrueCondition<C, U> implements DirectUpstreamCondition<C, U> {
         @SuppressWarnings("rawtypes")
         private static final AlwaysTrueCondition INSTANCE = new AlwaysTrueCondition<>();
@@ -46,7 +52,13 @@ public interface DirectUpstreamCondition<C, U> extends ConditionBase<C> {
         }
 
         @Override
+        public String getConditionTypeDisplayName() {
+            return "AlwaysTrue"; // 更具体的名称，用于 EdgeDefinition.toString()
+        }
+
+        @Override
         public String toString() {
+            // 这个 toString 主要用于直接打印 AlwaysTrueCondition 实例的场景
             return "Condition.alwaysTrue";
         }
 
