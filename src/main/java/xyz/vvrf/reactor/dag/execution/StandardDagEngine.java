@@ -10,9 +10,10 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * DagEngine 的标准实现 (已重构)。
+ * DagEngine 的标准实现 。
  * 负责根据 DAG 定义编排节点执行，处理依赖关系、条件边和错误策略。
  * 每个 execute 调用创建一个 DagExecutionContext 来管理其状态。
+ * 使用提供的 concurrencyLevel 控制引擎层面节点执行流的并发度。
  *
  * @param <C> 上下文类型
  * @author ruifeng.wen
@@ -22,7 +23,7 @@ public class StandardDagEngine<C> implements DagEngine<C> {
 
     private final NodeRegistry<C> nodeRegistry;
     private final NodeExecutor<C> nodeExecutor;
-    private final int concurrencyLevel; // 保留，当前未使用，但可用于未来配置
+    private final int concurrencyLevel;
 
     public StandardDagEngine(NodeRegistry<C> nodeRegistry, NodeExecutor<C> nodeExecutor, int concurrencyLevel) {
         this.nodeRegistry = Objects.requireNonNull(nodeRegistry, "NodeRegistry cannot be null");
@@ -30,8 +31,8 @@ public class StandardDagEngine<C> implements DagEngine<C> {
         if (concurrencyLevel <= 0) {
             throw new IllegalArgumentException("Concurrency level must be positive.");
         }
-        this.concurrencyLevel = concurrencyLevel; // 未来可用于配置引擎内部的并发操作
-        log.info("StandardDagEngine for context '{}' initialized. Executor: {}, Concurrency Level (config): {}",
+        this.concurrencyLevel = concurrencyLevel;
+        log.info("StandardDagEngine for context '{}' initialized. Executor: {}, Concurrency Level: {}",
                 nodeRegistry.getContextType().getSimpleName(),
                 nodeExecutor.getClass().getSimpleName(),
                 this.concurrencyLevel);
@@ -42,7 +43,7 @@ public class StandardDagEngine<C> implements DagEngine<C> {
         // 1. 创建 DagExecutionContext 来管理此执行的状态
         final DagExecutionContext<C> executionContext = new DagExecutionContext<>(initialContext, dagDefinition, requestId);
 
-        final String actualRequestId = executionContext.getRequestId(); // 从 executionContext 获取
+        final String actualRequestId = executionContext.getRequestId();
         final String dagName = executionContext.getDagName();
         final int totalNodes = executionContext.getTotalNodes();
 
@@ -52,16 +53,18 @@ public class StandardDagEngine<C> implements DagEngine<C> {
         }
 
         return Flux.defer(() -> {
-            log.debug("[RequestId: {}][DAG: '{}'] Initializing execution flows for all {} nodes.", actualRequestId, dagName, totalNodes);
-            List<Mono<Void>> executionFlows = executionContext.getAllNodeNames().stream()
-                    .map(nodeName -> getNodeMono(nodeName, executionContext) // 传递 executionContext
-                            .then() // 我们只需要完成信号，结果通过 executionContext.completedResults 共享
-                    )
-                    .collect(Collectors.toList());
+            log.debug("[RequestId: {}][DAG: '{}'] Initializing execution for all {} nodes with concurrency level {}.",
+                    actualRequestId, dagName, totalNodes, this.concurrencyLevel);
 
-            return Mono.when(executionFlows)
-                    .doOnSubscribe(s -> log.debug("[RequestId: {}][DAG: '{}'] Mono.when subscribed, waiting for all node flows to complete.", actualRequestId, dagName))
-                    .thenMany(Flux.defer(() -> {
+            // 使用 Flux.flatMap 控制并发执行 getNodeMono
+            return Flux.fromIterable(executionContext.getAllNodeNames())
+                    .flatMap(nodeName -> getNodeMono(nodeName, executionContext)
+                                    .then() // 我们只需要完成信号，结果通过 executionContext.completedResults 共享
+                            , this.concurrencyLevel) // 应用并发控制
+                    .then() // 等待所有 flatMap 中的 Mono 完成，得到一个 Mono<Void>
+                    .doOnSubscribe(s -> log.debug("[RequestId: {}][DAG: '{}'] Main execution Flux subscribed, processing nodes with concurrency {}.",
+                            actualRequestId, dagName, this.concurrencyLevel))
+                    .thenMany(Flux.defer(() -> { // 在所有节点处理完成后（成功、失败或跳过），收集事件
                         log.debug("[RequestId: {}][DAG: '{}'] All node flows completed. Extracting events from successful results.", actualRequestId, dagName);
                         return Flux.fromIterable(executionContext.getCompletedResults().values())
                                 .filter(NodeResult::isSuccess)
