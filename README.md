@@ -1,7 +1,7 @@
 # Reactor-DAG 执行与监控框架
 
 [![许可证](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Maven Central](https://img.shields.io/maven-central/v/xyz.vvrf/reactor-dag.svg?label=Maven%20Central)](https://search.maven.org/search?q=g:xyz.vvrf%20AND%20a:reactor-dag) <!-- 假设已发布到 Maven Central -->
+[![Maven Central](https://img.shields.io/maven-central/v/xyz.vvrf/reactor-dag.svg?label=Maven%20Central)](https://search.maven.org/search?q=g:xyz.vvrf%20AND%20a:reactor-dag) 
 <!-- 请根据实际情况添加更多徽章，例如：构建状态, 代码覆盖率, 等. -->
 <!-- 构建状态: [![Build Status](https://travis-ci.org/your-username/your-repo.svg?branch=main)](https://travis-ci.org/your-username/your-repo) -->
 <!-- 代码覆盖率: [![Coverage Status](https://coveralls.io/repos/github/your-username/your-repo/badge.svg?branch=main)](https://coveralls.io/github/your-username/your-repo?branch=main) -->
