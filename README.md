@@ -1155,11 +1155,7 @@ mvn test
 
 请参考项目的 `CHANGELOG.md` 文件（如果存在）或 GitHub Releases 页面获取详细的版本历史和变更记录。
 
-*(目前未提供 CHANGELOG.md，建议创建此文件以跟踪版本变更。)*
-
 ## 路线图 (Roadmap)
-
-*(当前未提供明确的路线图。以下是一些可能的未来方向，具体需项目维护者确认)*
 
 *   **更高级的调度策略**: 例如基于优先级的节点执行。
 *   **持久化 DAG 状态与恢复**: 支持长时间运行的 DAG，在系统重启后能够恢复执行状态。
@@ -1172,7 +1168,6 @@ mvn test
 ## 许可证 (License)
 
 本项目根据 [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) 授权。
-详细信息请参阅 `pom.xml` 中的 license 部分或项目根目录下的 `LICENSE` 文件（如果存在）。
 
 ## 常见问题解答 (FAQ)
 
