@@ -1,71 +1,64 @@
-//// [file name]: parallelnodec.java
-//package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
-//
-//import org.springframework.stereotype.Component;
-//import reactor.core.publisher.Mono;
-//import xyz.vvrf.reactor.dag.core.DagNode;
-//import xyz.vvrf.reactor.dag.core.DependencyAccessor; // Import Accessor
-//// Removed DependencyDescriptor import
-//import xyz.vvrf.reactor.dag.core.NodeResult;
-//import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
-//
-//// Removed List import
-//// Removed Map import
-//import java.util.concurrent.TimeUnit;
-//
-///**
-// * reactor-dag
-// * A node designed to run in parallel with other similar nodes.
-// * Depends on FirstNode.
-// * Uses DependencyAccessor (though doesn't access dependencies in this example).
-// *
-// * @author Your Name (modified)
-// * @date Today's Date (modified)
-// */
-//@Component
-//public class ParallelNodeC implements DagNode<ParalleContext, String, Void> {
-//
-//    @Override
-//    public Class<String> getPayloadType() {
-//        return String.class;
-//    }
-//
-//    @Override
-//    public Class<Void> getEventType() {
-//        return Void.class;
-//    }
-//
-//    /**
-//     * Executes the parallel node C logic.
-//     *
-//     * @param context      The parallel context.
-//     * @param dependencies Accessor for dependency results (unused in this node). <--- Updated Javadoc
-//     * @return A Mono containing the result.
-//     */
-//    @Override
-//    public Mono<NodeResult<ParalleContext, String, Void>> execute(ParalleContext context, DependencyAccessor<ParalleContext> dependencies) { // <--- Signature changed
-//        // 'dependencies' parameter is unused here, but the signature matches the interface.
-//        return Mono.fromCallable(() -> {
-//            String threadName = Thread.currentThread().getName();
-//            System.out.println("Executing " + this.getClass().getSimpleName() + " on thread: " + threadName + " (depends on FirstNode)");
-//
-//            // Simulate significant work
-//            try {
-//                TimeUnit.MILLISECONDS.sleep(500); // Longer delay
-//            } catch (InterruptedException e) {
-//                Thread.currentThread().interrupt();
-//                return NodeResult.<ParalleContext, String, Void>failure(
-//                        context, e, this);
-//            }
-//
-//            String resultPayload = this.getClass().getSimpleName() + " executed successfully on " + threadName;
-//            System.out.println(this.getClass().getSimpleName() + " finished.");
-//
-//            return NodeResult.success(context, resultPayload, this);
-//        }).onErrorResume(error -> {
-//            System.err.println("Error executing " + this.getClass().getSimpleName() + ": " + error.getMessage());
-//            return Mono.just(NodeResult.<ParalleContext, String, Void>failure(
-//                    context, error, this));
-//        });
-//    }
-//}
+package xyz.vvrf.reactor.dag.example.dataParalleDag.node;
+
+import lombok.extern.slf4j.Slf4j;
+// 移除 org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import xyz.vvrf.reactor.dag.annotation.DagNodeType; // 引入新注解
+import xyz.vvrf.reactor.dag.core.*;
+import xyz.vvrf.reactor.dag.example.dataParalleDag.ParalleContext;
+
+import java.util.Collections; // 引入 Collections
+import java.util.HashSet; // 引入 HashSet
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+
+// 使用 @DagNodeType 注解
+@DagNodeType(id = "parallelNodeTypeC", contextType = ParalleContext.class) // 指定 ID 和上下文类型
+@Slf4j
+public class ParallelNodeC implements DagNode<ParalleContext, String> {
+
+    public static final InputSlot<String> INPUT_START_DATA = InputSlot.required("startData", String.class);
+    public static final OutputSlot<String> OUTPUT_RESULT = OutputSlot.defaultOutput(String.class);
+
+    @Override
+    public Set<InputSlot<?>> getInputSlots() {
+        // JDK 8
+        return new HashSet<>(Collections.singletonList(INPUT_START_DATA));
+    }
+
+    @Override
+    public OutputSlot<String> getOutputSlot() {
+        return OUTPUT_RESULT;
+    }
+
+    @Override
+    public Mono<NodeResult<ParalleContext, String>> execute(ParalleContext context, InputAccessor<ParalleContext> inputs) {
+        return Mono.defer(() -> {
+            try {
+                String threadName = Thread.currentThread().getName();
+                log.info("Executing {} logic on thread: {} (requires input '{}')", this.getClass().getSimpleName(), threadName, INPUT_START_DATA.getId());
+
+                try {
+                    TimeUnit.MILLISECONDS.sleep(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    log.error("Interrupted during sleep in {}", this.getClass().getSimpleName(), e);
+                    return Mono.just(NodeResult.<ParalleContext, String>failure(e));
+                }
+
+                String resultPayload = this.getClass().getSimpleName() + " executed successfully on " + threadName;
+                log.info("{} logic finished.", this.getClass().getSimpleName());
+
+                Event<String> completionEvent = Event.of("NODE_COMPLETED", resultPayload);
+                NodeResult<ParalleContext, String> successResult = NodeResult.success(resultPayload, Flux.just(completionEvent));
+
+                return Mono.just(successResult);
+
+            } catch (Throwable t) {
+                log.error("Unexpected error executing {} logic: {}", this.getClass().getSimpleName(), t.getMessage(), t);
+                return Mono.just(NodeResult.<ParalleContext, String>failure(t));
+            }
+        });
+    }
+}

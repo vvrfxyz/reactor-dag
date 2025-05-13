@@ -181,27 +181,27 @@ implementation 'com.github.ben-manes.caffeine:caffeine' // 使用兼容版本
     }
     ```
 
-3.  **定义 DAG 结构**: 继承 `AbstractDagDefinition<C>`。
-    ```java
-    import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition;
-    import xyz.vvrf.reactor.dag.core.DagNode;
-    import java.util.List;
-    
-    public class MySimpleDag extends AbstractDagDefinition<MyContext> {
-    
-        // 通常通过构造函数注入节点实例
-        public MySimpleDag(List<DagNode<MyContext, ?, ?>> nodes) {
-            super(MyContext.class, nodes);
-            // 注意：如果需要使用 ChainBuilder，应在此处或之后、initialize() 之前配置
-        }
-    
-        // 可选：覆盖 getDagName() 提供更友好的名称
-        @Override
-        public String getDagName() {
-            return "MySimpleProcessingDag";
-        }
-    }
-    ```
+3. **定义 DAG 结构**: 继承 `AbstractDagDefinition<C>`。
+   ```java
+   import xyz.vvrf.reactor.dag.execution.AbstractDagDefinition;
+   import xyz.vvrf.reactor.dag.core.DagNode;
+   import java.util.List;
+   
+   public class MySimpleDag extends AbstractDagDefinition<MyContext> {
+   
+       // 通常通过构造函数注入节点实例
+       public MySimpleDag(List<DagNode<MyContext, ?, ?>> nodes) {
+           super(MyContext.class, nodes);
+           // 注意：如果需要使用 ChainBuilder，应在此处或之后、initialize() 之前配置
+       }
+   
+       // 可选：覆盖 getDagName() 提供更友好的名称
+       @Override
+       public String getDagName() {
+           return "MySimpleProcessingDag";
+       }
+   }
+   ```
 
 4.  **(可选) 使用 ChainBuilder 定义依赖**:
     ```java
@@ -261,21 +261,21 @@ implementation 'com.github.ben-manes.caffeine:caffeine' // 使用兼容版本
     dagDefinition.initialize(); // 或 dagDefinition.initializeIfNeeded();
     ```
 
-5.  **创建执行器和引擎**:
-    ```java
-    import xyz.vvrf.reactor.dag.impl.StandardNodeExecutor;
-    import xyz.vvrf.reactor.dag.impl.StandardDagEngine;
-    import java.time.Duration;
-    
-    // 配置执行器
-    Duration defaultTimeout = Duration.ofSeconds(10);
-    StandardNodeExecutor nodeExecutor = new StandardNodeExecutor(defaultTimeout);
-    
-    // 配置引擎
-    Duration cacheTtl = Duration.ofMinutes(1);
-    int concurrency = 4; // 并发处理节点的数量
-    StandardDagEngine dagEngine = new StandardDagEngine(nodeExecutor, cacheTtl, concurrency);
-    ```
+5. **创建执行器和引擎**:
+   ```java
+   import xyz.vvrf.reactor.dag.execution.StandardNodeExecutor;
+   import xyz.vvrf.reactor.dag.execution.StandardDagEngine;
+   import java.time.Duration;
+   
+   // 配置执行器
+   Duration defaultTimeout = Duration.ofSeconds(10);
+   StandardNodeExecutor nodeExecutor = new StandardNodeExecutor(defaultTimeout);
+   
+   // 配置引擎
+   Duration cacheTtl = Duration.ofMinutes(1);
+   int concurrency = 4; // 并发处理节点的数量
+   StandardDagEngine dagEngine = new StandardDagEngine(nodeExecutor, cacheTtl, concurrency);
+   ```
 
 6.  **执行 DAG**:
     ```java
@@ -356,62 +356,62 @@ implementation 'com.github.ben-manes.caffeine:caffeine' // 使用兼容版本
         // ... 实现其他方法，通常不实现 getDependencies() 如果用 ChainBuilder ...
     }
     ```
-4.  **定义 DAG Definition**: 将 `AbstractDagDefinition` 子类声明为 Spring Bean，并通过构造函数注入所有 `DagNode<MyContext, ?, ?>` 类型的 Bean。
-    ```java
-    import org.springframework.beans.factory.annotation.Autowired;
-    import org.springframework.context.annotation.Configuration;
-    import xyz.vvrf.reactor.dag.builder.ChainBuilder;
-    import xyz.vvrf.reactor.dag.impl.AbstractDagDefinition;
-    import xyz.vvrf.reactor.dag.core.DagNode;
-    import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
-    import javax.annotation.PostConstruct; // 或者在构造函数末尾调用 initialize
-    import java.util.List;
-    import java.util.Map;
-    
-    @Configuration // 或 @Component
-    public class MySimpleDag extends AbstractDagDefinition<MyContext> {
-    
-        // 构造函数注入所有 MyContext 相关的节点 Bean
-        @Autowired
-        public MySimpleDag(List<DagNode<MyContext, ?, ?>> nodes) {
-            super(MyContext.class, nodes);
-    
-            // 在构造函数或 @PostConstruct 中使用 ChainBuilder 配置显式依赖
-            ChainBuilder<MyContext> builder = new ChainBuilder<>(this); // 'this' 就是 AbstractDagDefinition
-            configureDependencies(builder);
-    
-            // 将构建好的依赖添加到 Definition
-            Map<String, List<DependencyDescriptor>> explicitDeps = builder.build();
-            for (Map.Entry<String, List<DependencyDescriptor>> entry : explicitDeps.entrySet()) {
-                addExplicitDependencies(entry.getKey(), entry.getValue());
-            }
-            // 或者: addExplicitDependencies(explicitDeps); // 如果有 Map 重载
-    
-            // !!! 重要：确保在 Bean 完全构造后初始化 !!!
-            // 可以在构造函数末尾调用，或使用 @PostConstruct
-            // initialize(); // 在构造函数末尾调用可能稍早
-        }
-    
-        private void configureDependencies(ChainBuilder<MyContext> builder) {
-            // 使用节点名称字符串定义依赖
-            builder.startWith(NodeA.NODE_NAME); // A 是起点
-            builder.node(NodeB.NODE_NAME, NodeA.NODE_NAME); // B 依赖 A (覆盖 NodeB 可能的内部定义)
-            builder.node(NodeC.NODE_NAME, NodeA.NODE_NAME, NodeB.NODE_NAME); // C 依赖 A 和 B
-        }
-    
-        @Override
-        public String getDagName() {
-            return "MySpringBootDag";
-        }
-    
-        // 推荐使用 @PostConstruct 确保所有依赖注入完成后再初始化
-        @PostConstruct
-        public void init() {
-            log.info("Initializing DAG Definition: {}", getDagName());
-            initializeIfNeeded(); // 或 initialize()
-        }
-    }
-    ```
+4. **定义 DAG Definition**: 将 `AbstractDagDefinition` 子类声明为 Spring Bean，并通过构造函数注入所有 `DagNode<MyContext, ?, ?>` 类型的 Bean。
+   ```java
+   import org.springframework.beans.factory.annotation.Autowired;
+   import org.springframework.context.annotation.Configuration;
+   import xyz.vvrf.reactor.dag.builder.ChainBuilder;
+   import xyz.vvrf.reactor.dag.execution.AbstractDagDefinition;
+   import xyz.vvrf.reactor.dag.core.DagNode;
+   import xyz.vvrf.reactor.dag.core.DependencyDescriptor;
+   import javax.annotation.PostConstruct; // 或者在构造函数末尾调用 initialize
+   import java.util.List;
+   import java.util.Map;
+   
+   @Configuration // 或 @Component
+   public class MySimpleDag extends AbstractDagDefinition<MyContext> {
+   
+       // 构造函数注入所有 MyContext 相关的节点 Bean
+       @Autowired
+       public MySimpleDag(List<DagNode<MyContext, ?, ?>> nodes) {
+           super(MyContext.class, nodes);
+   
+           // 在构造函数或 @PostConstruct 中使用 ChainBuilder 配置显式依赖
+           ChainBuilder<MyContext> builder = new ChainBuilder<>(this); // 'this' 就是 AbstractDagDefinition
+           configureDependencies(builder);
+   
+           // 将构建好的依赖添加到 Definition
+           Map<String, List<DependencyDescriptor>> explicitDeps = builder.build();
+           for (Map.Entry<String, List<DependencyDescriptor>> entry : explicitDeps.entrySet()) {
+               addExplicitDependencies(entry.getKey(), entry.getValue());
+           }
+           // 或者: addExplicitDependencies(explicitDeps); // 如果有 Map 重载
+   
+           // !!! 重要：确保在 Bean 完全构造后初始化 !!!
+           // 可以在构造函数末尾调用，或使用 @PostConstruct
+           // initialize(); // 在构造函数末尾调用可能稍早
+       }
+   
+       private void configureDependencies(ChainBuilder<MyContext> builder) {
+           // 使用节点名称字符串定义依赖
+           builder.startWith(NodeA.NODE_NAME); // A 是起点
+           builder.node(NodeB.NODE_NAME, NodeA.NODE_NAME); // B 依赖 A (覆盖 NodeB 可能的内部定义)
+           builder.node(NodeC.NODE_NAME, NodeA.NODE_NAME, NodeB.NODE_NAME); // C 依赖 A 和 B
+       }
+   
+       @Override
+       public String getDagName() {
+           return "MySpringBootDag";
+       }
+   
+       // 推荐使用 @PostConstruct 确保所有依赖注入完成后再初始化
+       @PostConstruct
+       public void init() {
+           log.info("Initializing DAG Definition: {}", getDagName());
+           initializeIfNeeded(); // 或 initialize()
+       }
+   }
+   ```
 5.  **注入并使用引擎**: 自动配置会提供 `SpringDagEngine` Bean。
     ```java
     import org.springframework.beans.factory.annotation.Autowired;

@@ -1,78 +1,99 @@
 package xyz.vvrf.reactor.dag.monitor;
 
+import xyz.vvrf.reactor.dag.core.DagDefinition;
 import xyz.vvrf.reactor.dag.core.DagNode;
 import xyz.vvrf.reactor.dag.core.NodeResult;
 
 import java.time.Duration;
+import java.util.Map;
 
 /**
- * 用于监控 DAG 节点执行事件的监听器接口。
- * 实现类可用于发送指标、记录详细执行信息等。
+ * 用于监控 DAG 执行事件的监听器接口。
+ * 包括 DAG 级别和节点级别的事件。
  *
- * 注意：为简单起见，此初始版本不包含上下文对象 'C'。
- * 如果特定监听器需要访问它，可以稍后添加。
+ * @author ruifeng.wen
  */
 public interface DagMonitorListener {
 
     /**
-     * 当一个节点即将被执行时调用（在依赖解析之后，shouldExecute 检查之前）。
+     * DAG 执行开始时调用。
      *
-     * @param requestId DAG 执行请求的唯一 ID。
-     * @param dagName   正在执行的 DAG 定义的名称。
-     * @param nodeName  即将开始的节点的名称。
-     * @param node      正在执行的 DagNode 实例。
+     * @param requestId       请求 ID
+     * @param dagName         DAG 名称
+     * @param dagDefinition   DAG 定义信息
+     * @param initialContext  初始上下文对象 (注意: 实现者应考虑处理此对象中的敏感信息)
      */
-    void onNodeStart(String requestId, String dagName, String nodeName, DagNode<?, ?, ?> node);
+    void onDagStart(String requestId, String dagName, DagDefinition<?> dagDefinition, Object initialContext);
 
     /**
-     * 当节点执行成功完成时调用。
+     * DAG 执行完成时调用 (无论成功或失败)。
      *
-     * @param requestId     DAG 执行请求的唯一 ID。
-     * @param dagName       正在执行的 DAG 定义的名称。
-     * @param nodeName      成功完成的节点的名称。
-     * @param totalDuration 节点从 onNodeStart 到成功的总持续时间。
-     * @param logicDuration 节点核心逻辑执行的持续时间 (从 execute 调用开始计时)。
-     * @param result        成功执行返回的 NodeResult。
-     * @param node          DagNode 实例。
+     * @param requestId       请求 ID
+     * @param dagName         DAG 名称
+     * @param dagDefinition   DAG 定义信息
+     * @param totalDuration   DAG 总执行耗时
+     * @param success         DAG 是否整体成功
+     * @param finalResults    所有节点的最终结果 Map (实例名 -> NodeResult)
+     * @param error           如果 DAG 执行因未捕获的顶层异常而失败，则为该异常；否则为 null
      */
-    void onNodeSuccess(String requestId, String dagName, String nodeName, Duration totalDuration, Duration logicDuration, NodeResult<?, ?, ?> result, DagNode<?, ?, ?> node);
+    void onDagComplete(String requestId, String dagName, DagDefinition<?> dagDefinition, Duration totalDuration, boolean success, Map<String, NodeResult<?, ?>> finalResults, Throwable error);
 
     /**
-     * 当节点执行失败时调用（如果适用，在重试之后）。
+     * 节点执行开始时调用。
      *
-     * @param requestId     DAG 执行请求的唯一 ID。
-     * @param dagName       正在执行的 DAG 定义的名称。
-     * @param nodeName      失败的节点的名称。
-     * @param totalDuration 节点从 onNodeStart 到失败的总持续时间。
-     * @param logicDuration 节点核心逻辑执行的持续时间 (从 execute 调用开始计时)。 // 新增
-     * @param error         导致失败的错误。
-     * @param node          失败的 DagNode 实例。
+     * @param requestId    请求 ID
+     * @param dagName      DAG 名称
+     * @param instanceName 节点实例名
+     * @param node         节点实现
      */
-    void onNodeFailure(String requestId, String dagName, String nodeName, Duration totalDuration, Duration logicDuration, Throwable error, DagNode<?, ?, ?> node);
+    void onNodeStart(String requestId, String dagName, String instanceName, DagNode<?, ?> node);
 
     /**
-     * 当节点执行因其 shouldExecute 条件为 false 而被跳过时调用。
+     * 节点成功执行完成时调用。
      *
-     * @param requestId DAG 执行请求的唯一 ID。
-     * @param dagName   正在执行的 DAG 定义的名称。
-     * @param nodeName  被跳过的节点的名称。
-     * @param node      被跳过的 DagNode 实例。
+     * @param requestId     请求 ID
+     * @param dagName       DAG 名称
+     * @param instanceName  节点实例名
+     * @param totalDuration 节点总执行耗时 (包括重试、排队等)
+     * @param logicDuration 节点核心逻辑执行耗时
+     * @param result        节点结果
+     * @param node          节点实现
      */
-    void onNodeSkipped(String requestId, String dagName, String nodeName, DagNode<?, ?, ?> node);
+    void onNodeSuccess(String requestId, String dagName, String instanceName, Duration totalDuration, Duration logicDuration, NodeResult<?, ?> result, DagNode<?, ?> node);
 
     /**
-     * 当节点执行尝试因超时而失败时调用。
-     * 如果超时是重试后的最终错误，这可能在 onNodeFailure 之前调用。
+     * 节点执行失败时调用。
      *
-     * @param requestId DAG 执行请求的唯一 ID。
-     * @param dagName   正在执行的 DAG 定义的名称。
-     * @param nodeName  超时的节点的名称。
-     * @param timeout   为节点配置的超时持续时间。
-     * @param node      超时的 DagNode 实例。
+     * @param requestId     请求 ID
+     * @param dagName       DAG 名称
+     * @param instanceName  节点实例名
+     * @param totalDuration 节点总执行耗时
+     * @param logicDuration 节点核心逻辑执行耗时 (如果适用)
+     * @param error         导致失败的错误
+     * @param node          节点实现
      */
-    void onNodeTimeout(String requestId, String dagName, String nodeName, Duration timeout, DagNode<?, ?, ?> node);
+    void onNodeFailure(String requestId, String dagName, String instanceName, Duration totalDuration, Duration logicDuration, Throwable error, DagNode<?, ?> node);
 
-    // 可选：如果需要整体 DAG 监控，可以添加 onDagStart, onDagEnd
-    // void onDagStart(String requestId, String dagName, C context, DagDefinition<C> dagDefinition);
-    // void onDagEnd(String requestId, String dagName, Duration duration, Status status); // Status 可以是 SUCCESS, FAILED
+    /**
+     * 节点被跳过时调用。
+     *
+     * @param requestId    请求 ID
+     * @param dagName      DAG 名称
+     * @param instanceName 节点实例名
+     * @param node         节点实现 (可能为 null，如果节点定义本身有问题)
+     */
+    void onNodeSkipped(String requestId, String dagName, String instanceName, DagNode<?, ?> node);
+
+    /**
+     * 节点执行超时时调用。
+     * 这通常是 onNodeFailure 的一种特定情况，但为方便监控单独列出。
+     *
+     * @param requestId    请求 ID
+     * @param dagName      DAG 名称
+     * @param instanceName 节点实例名
+     * @param timeout      配置的超时时长
+     * @param node         节点实现
+     */
+    void onNodeTimeout(String requestId, String dagName, String instanceName, Duration timeout, DagNode<?, ?> node);
+
 }
