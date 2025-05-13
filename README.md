@@ -1225,10 +1225,8 @@ A6: `SpringScanningNodeRegistry` 内部委托给 `SimpleNodeRegistry`。它允�
 *   感谢 [Cytoscape.js](https://js.cytoscape.org/) 社区提供了优秀的图形可视化库。
 *   感谢 [Vue.js](https://vuejs.org/) 社区。
 
-*(如果项目基于其他开源项目或受到特定人物/组织的启发，请在此处添加致谢。)*
-
 ## 联系方式/支持 (Contact/Support)
 
 *   **GitHub Issues**: 如有 Bug 或功能请求，请通过项目 GitHub 仓库的 [Issues](https://github.com/vvrf/reactor-dag/issues) 页面提交。 <!-- 请替换为实际的仓库链接 -->
-*   **(可选) 开发者邮箱**: `ruifeng.wen@vvrf.xyz` (来自 pom.xml)
+*   **开发者邮箱**: `vvrfxyz@gmail.com` 
 
