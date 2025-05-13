@@ -1151,10 +1151,6 @@ mvn test
 *   添加必要的 Javadoc 注释，特别是公共 API。
 *   编写清晰、可维护的代码。
 
-## 版本历史 (Changelog/Release Notes)
-
-请参考项目的 `CHANGELOG.md` 文件（如果存在）或 GitHub Releases 页面获取详细的版本历史和变更记录。
-
 ## 路线图 (Roadmap)
 
 *   **更高级的调度策略**: 例如基于优先级的节点执行。
@@ -1222,6 +1218,6 @@ A6: `SpringScanningNodeRegistry` 内部委托给 `SimpleNodeRegistry`。它允�
 
 ## 联系方式/支持 (Contact/Support)
 
-*   **GitHub Issues**: 如有 Bug 或功能请求，请通过项目 GitHub 仓库的 [Issues](https://github.com/vvrf/reactor-dag/issues) 页面提交。 <!-- 请替换为实际的仓库链接 -->
+*   **GitHub Issues**: 如有 Bug 或功能请求，请通过项目 GitHub 仓库的 [Issues](https://github.com/vvrfxyz/reactor-dag/issues) 页面提交。 
 *   **开发者邮箱**: `vvrfxyz@gmail.com` 
 
