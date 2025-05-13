@@ -1052,7 +1052,6 @@ dag:
 *   `xyz.vvrf.reactor.dag.builder`: 包含 `DagDefinitionBuilder`，用于编程式构建 DAG。
 *   `xyz.vvrf.reactor.dag.core`: 包含 DAG 的核心模型接口和类，如 `DagNode`, `DagDefinition`, `NodeResult`, `InputSlot`, `OutputSlot`, `EdgeDefinition`, `ConditionBase` 及其子接口, `InputAccessor` 及其变体, `Event`, `ErrorHandlingStrategy`。
 *   `xyz.vvrf.reactor.dag.execution`: 包含 DAG 执行相关的核心组件，如 `DagEngine`, `NodeExecutor`, `StandardDagEngine`, `StandardNodeExecutor`, `DagExecutionContext`, `DefaultInputAccessor`, `RestrictedConditionInputAccessor`, `DefaultLocalInputAccessor`。
-*   `xyz.vvrf.reactor.dag.impl`: (在此项目中，`DefaultInputDependencyAccessor` 在这里，可能包含其他非核心接口的默认实现)。
 *   `xyz.vvrf.reactor.dag.monitor`: DAG 监控相关的接口。
     *   `xyz.vvrf.reactor.dag.monitor.web.autoconfigure`: 监控模块的 Spring Boot 自动配置。
     *   `xyz.vvrf.reactor.dag.monitor.web.controller`: 监控相关的 WebFlux 控制器 (`DagMonitoringController`)。
